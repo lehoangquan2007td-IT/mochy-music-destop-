@@ -122,6 +122,8 @@ pub struct MochyApp {
     window_seen: (f32, f32, bool),
     started: Instant,
     copy_request: Option<String>,
+    /// `MOCHY_SHOTS=<dir>`: visual-check automation (screenshot pages, then exit).
+    shots: Option<ShotRunner>,
 }
 
 impl MochyApp {
@@ -237,6 +239,7 @@ impl MochyApp {
             window_seen,
             started: Instant::now(),
             copy_request: None,
+            shots: std::env::var_os("MOCHY_SHOTS").map(|d| ShotRunner { dir: d.into(), started: std::time::Instant::now(), step: 0, taken: false }),
             svc,
         };
         app.accent_applied.1 = app.settings.appearance.pure_black;
@@ -1344,6 +1347,7 @@ impl eframe::App for MochyApp {
             ctx.copy_text(t);
         }
         self.apply_actions();
+        self.run_shots(&ctx);
         // Settings changed by actions (volume/shuffle) are picked up next frame.
         if self.settings != self.settings_seen {
             ctx.request_repaint();
@@ -1405,5 +1409,57 @@ fn native_hwnd(cc: &eframe::CreationContext<'_>) -> Option<*mut std::ffi::c_void
     match h.as_raw() {
         RawWindowHandle::Win32(w) => Some(w.hwnd.get() as *mut std::ffi::c_void),
         _ => None,
+    }
+}
+
+/// Screenshot automation for visual checks (`MOCHY_SHOTS=<dir>`).
+struct ShotRunner {
+    dir: std::path::PathBuf,
+    started: std::time::Instant,
+    step: usize,
+    taken: bool,
+}
+
+impl MochyApp {
+    fn run_shots(&mut self, ctx: &egui::Context) {
+        let Some(sr) = self.shots.as_mut() else { return };
+        // (name, route, seconds to wait before the shot — Home waits for network/art)
+        let steps: [(&str, Route, f32); 5] = [
+            ("home", Route::Home, 12.0),
+            ("search", Route::Search, 3.0),
+            ("library", Route::Library(LibTab::History), 3.0),
+            ("audio_lab", Route::AudioLab, 3.0),
+            ("settings", Route::Settings, 3.0),
+        ];
+        ctx.request_repaint_after(Duration::from_millis(100));
+        if sr.step >= steps.len() {
+            if sr.started.elapsed().as_secs_f32() > 1.0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            return;
+        }
+        let (name, route, wait) = steps[sr.step].clone();
+        if self.nav.current() != &route {
+            self.nav.go(route);
+        }
+        let t = sr.started.elapsed().as_secs_f32();
+        if !sr.taken && t >= wait {
+            sr.taken = true;
+            let path = sr.dir.join(format!("{name}.png"));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
+                let [w, h] = img.size;
+                let mut buf = Vec::with_capacity(w * h * 4);
+                for p in &img.pixels {
+                    buf.extend_from_slice(&p.to_array());
+                }
+                if let Some(rgba) = image::RgbaImage::from_raw(w as u32, h as u32, buf) {
+                    let _ = rgba.save(&path);
+                }
+            })));
+        } else if sr.taken && t >= wait + 0.7 {
+            sr.step += 1;
+            sr.taken = false;
+            sr.started = std::time::Instant::now();
+        }
     }
 }

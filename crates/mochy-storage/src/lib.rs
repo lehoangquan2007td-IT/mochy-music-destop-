@@ -270,7 +270,10 @@ fn song_from_row(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<Song> {
     let duration_raw: i64 = row.get("duration")?;
     let is_local: bool = row.get("isLocal")?;
     let local_uri: Option<String> = row.get("localUri")?;
-    let total_ms: i64 = row.get("totalPlayTime")?;
+    let total_ms: i64 = match row.get_ref("totalPlayTime")? {
+        rusqlite::types::ValueRef::Real(f) => (f * 1000.0) as i64,
+        v => v.as_i64_or_null()?.unwrap_or(0),
+    };
     let in_library: Option<i64> = row.get("inLibrary")?;
 
     let mut stmt = conn.prepare_cached(
@@ -488,6 +491,12 @@ impl Db {
                 conn.execute_batch(&format!("ALTER TABLE `{table}` ADD COLUMN `{col}` {decl};"))?;
             }
         }
+        // Older untested desktop builds stored play time as REAL seconds;
+        // Room (and this build) store INTEGER milliseconds.
+        conn.execute_batch(
+            "UPDATE song SET totalPlayTime = CAST(totalPlayTime * 1000 AS INTEGER) WHERE typeof(totalPlayTime) = 'real';
+             UPDATE event SET playTime = CAST(playTime * 1000 AS INTEGER) WHERE typeof(playTime) = 'real';",
+        )?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self { conn: Mutex::new(conn) })
     }

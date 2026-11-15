@@ -88,9 +88,7 @@ pub fn apply(ctx: &Context, accent: Color32, pure_black: bool) {
 
     // Fonts set this pass may only become active next pass; re-style once
     // they are, so the heading style can point at Inter SemiBold.
-    let fonts_ready = ctx.fonts(|f| {
-        f.definitions().families.contains_key(&FontFamily::Name(FONT_SEMIBOLD.into()))
-    });
+    let fonts_ready = has_family(ctx, &FontFamily::Name(FONT_SEMIBOLD.into()));
     let key = Id::unique("mochy_theme_applied");
     let current = (accent, pure_black, fonts_ready);
     if ctx.data(|d| d.get_temp::<(Color32, bool, bool)>(key)) == Some(current) {
@@ -102,11 +100,18 @@ pub fn apply(ctx: &Context, accent: Color32, pure_black: bool) {
     ctx.all_styles_mut(|style| configure_style(style, accent, pure_black, fonts_ready));
 }
 
+/// True when `fam` is installed. Safe before the first pass: egui panics on
+/// `Context::fonts` until a pass has run (e.g. inside `App::new`), so report
+/// "not installed" then.
+fn has_family(ctx: &Context, fam: &FontFamily) -> bool {
+    ctx.cumulative_pass_nr() > 0 && ctx.fonts(|f| f.definitions().families.contains_key(fam))
+}
+
 /// Font family by name, or `Proportional` when it isn't installed (e.g. before
 /// [`apply`] ran) — using an unknown family would panic in egui.
 pub fn family(ctx: &Context, name: &str) -> FontFamily {
     let fam = FontFamily::Name(name.into());
-    if ctx.fonts(|f| f.definitions().families.contains_key(&fam)) {
+    if has_family(ctx, &fam) {
         fam
     } else {
         FontFamily::Proportional
