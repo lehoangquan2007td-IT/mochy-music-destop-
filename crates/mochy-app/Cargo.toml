@@ -1,0 +1,29 @@
+[package]
+name = "mochy-app"
+description = "Mochy Music desktop app (egui GUI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mochy-app"
+path = "src/main.rs"
+
+[dependencies]
+mochy-core = { path = "../mochy-core" }
+mochy-audio = { path = "../mochy-audio" }
+mochy-innertube = { path = "../mochy-innertube" }
+mochy-lyrics = { path = "../mochy-lyrics" }
+mochy-storage = { path = "../mochy-storage" }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "accesskit", "clipboard", "default_fonts", "links", "system_fonts", "wayland", "x11"] }
+egui = "0.37.0"
+image = "0.25.10"
+rfd = "0.18.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync"] }
+rand = "0.10.3"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+dirs = "7.0.0"
+lofty = "0.25.5"

@@ -1,0 +1,13 @@
+[package]
+name = "mochy-audio"
+description = "Audio playback engine with 10-band EQ, resampling and speed control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dirs = "7.0.0"
+mochy-core = { path = "../mochy-core" }
+rodio = "0.23.0"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"

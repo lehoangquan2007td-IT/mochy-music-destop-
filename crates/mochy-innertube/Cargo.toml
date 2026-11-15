@@ -1,0 +1,15 @@
+[package]
+name = "mochy-innertube"
+description = "YouTube Music InnerTube API client (search, browse, stream URLs, FLAC)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mochy-core = { path = "../mochy-core" }
+rand = "0.10.3"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "gzip", "deflate", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
