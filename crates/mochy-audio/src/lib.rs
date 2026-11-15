@@ -59,8 +59,22 @@ pub enum Command {
     SetVolumeCurve { enabled: bool, exponent: f32, limit: f32 },
     /// ReplayGain: gain in dB + peak (None = bypass).
     SetReplayGain { gain_db: Option<f32>, peak: Option<f32>, preamp_db: f32 },
+    /// Pitch shift in semitones; `preserve_pitch` = time-stretch speed without
+    /// changing pitch (spec §4.7).
+    SetPitch { semitones: f32, preserve_pitch: bool },
+    /// Freeverb-style reverb (spec §4.6).
+    SetReverb { reverb: mochy_core::settings::ReverbSettings },
+    /// Crossfeed / virtual speakers / mono / width (spec §4.6).
+    SetSpatial { spatial: mochy_core::settings::SpatialSettings },
+    /// Switch output device by name (`None` = system default). Keeps position.
+    SetOutputDevice { name: Option<String> },
     /// Graceful shutdown of the engine thread.
     Shutdown,
+}
+
+/// Names of available output devices (for the settings picker).
+pub fn output_devices() -> Vec<String> {
+    Vec::new()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,22 +91,36 @@ pub enum Event {
     Error(String),
     /// Emitted every ~66 ms while a track is loaded (spec §4.1 progress loop).
     Progress { pos_secs: f64, duration_secs: Option<f64> },
+    /// Emitted once decoding starts: source format details (for the format badge).
+    TrackInfo { codec: String, sample_rate: u32, channels: u16, bits_per_sample: Option<u32> },
 }
 
+/// Number of log-spaced bands in [`EngineHandle::spectrum`] (20 Hz – 20 kHz).
+pub const SPECTRUM_BANDS: usize = 64;
+
 /// Handle used by the app to command the engine thread.
+/// NOTE: the app must treat `Event` as non-exhaustive (use a `_ => {}` arm).
 #[derive(Debug, Clone)]
 pub struct EngineHandle {
     tx: std::sync::mpsc::Sender<Command>,
+    spectrum: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
 }
 
 impl EngineHandle {
     pub fn new(tx: std::sync::mpsc::Sender<Command>) -> Self {
-        Self { tx }
+        Self { tx, spectrum: Default::default() }
     }
 
     /// Send a command; the engine thread owns the receiving side.
     pub fn send(&self, cmd: Command) {
         let _ = self.tx.send(cmd);
+    }
+
+    /// Latest post-DSP output spectrum: `SPECTRUM_BANDS` values in dBFS
+    /// (≈ −90..0), log-spaced 20 Hz – 20 kHz, updated ~30×/s while playing.
+    /// Empty when nothing is playing. Cheap; call every frame.
+    pub fn spectrum(&self) -> Vec<f32> {
+        self.spectrum.lock().map(|v| v.clone()).unwrap_or_default()
     }
 }
 
@@ -367,6 +395,10 @@ fn engine_loop(rx: std::sync::mpsc::Receiver<Command>, events: Sender<Event>) {
                         sink.set_volume(base_vol);
                     }
                 }
+                Command::SetPitch { .. }
+                | Command::SetReverb { .. }
+                | Command::SetSpatial { .. }
+                | Command::SetOutputDevice { .. } => {}
                 Command::Shutdown => {
                     sink.stop();
                     return;

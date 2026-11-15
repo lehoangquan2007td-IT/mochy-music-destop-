@@ -82,6 +82,8 @@ pub struct Playback {
     /// Crossfade duration seconds (used by MANUAL_CROSSFADE).
     pub crossfade_duration_secs: f32,
     pub data_saver: bool,
+    /// Output device name (`None` = system default).
+    pub output_device: Option<String>,
 }
 
 impl Default for Playback {
@@ -98,6 +100,7 @@ impl Default for Playback {
             transition_mode: TransitionMode::Crossmix,
             crossfade_duration_secs: 5.0,
             data_saver: false,
+            output_device: None,
         }
     }
 }
@@ -123,6 +126,12 @@ pub struct AudioLab {
     /// Playback speed factor 0.1–8.0.
     pub speed: f32,
     pub preserve_pitch: bool,
+    /// Pitch shift in semitones (−12..+12), applied with speed (spec §4.7).
+    pub pitch_semitones: f32,
+    pub reverb: ReverbSettings,
+    pub spatial: SpatialSettings,
+    /// User-saved EQ presets (Android `presets` key).
+    pub user_presets: Vec<crate::eq::UserEqPreset>,
 }
 
 impl Default for AudioLab {
@@ -139,6 +148,108 @@ impl Default for AudioLab {
             normalize_preamp_db: 3.0,
             speed: 1.0,
             preserve_pitch: false,
+            pitch_semitones: 0.0,
+            reverb: ReverbSettings::default(),
+            spatial: SpatialSettings::default(),
+            user_presets: Vec::new(),
+        }
+    }
+}
+
+/// Freeverb-style reverb (spec §4.2 `ReverbSettings`, presets §4.6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReverbSettings {
+    pub enabled: bool,
+    pub mix: f32,
+    pub room_size: f32,
+    pub damping: f32,
+    pub wet: f32,
+    pub dry: f32,
+    pub width: f32,
+    pub pre_delay_ms: f32,
+    pub low_cut_hz: f32,
+    pub preset_id: String,
+}
+
+impl Default for ReverbSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mix: 0.5,
+            room_size: 0.55,
+            damping: 0.45,
+            wet: 0.6,
+            dry: 1.0,
+            width: 1.0,
+            pre_delay_ms: 12.0,
+            low_cut_hz: 180.0,
+            preset_id: "room".into(),
+        }
+    }
+}
+
+/// Reverb presets (spec §4.6):
+/// (id, name, mix, room_size, damping, wet, width, pre_delay_ms, low_cut_hz).
+#[rustfmt::skip]
+pub const REVERB_PRESETS: &[(&str, &str, f32, f32, f32, f32, f32, f32, f32)] = &[
+    ("room",      "Room",      0.5,  0.55, 0.45, 0.6,  1.0, 12.0, 180.0),
+    ("studio",    "Studio",    0.4,  0.3,  0.65, 0.45, 0.8, 5.0,  250.0),
+    ("bathroom",  "Bathroom",  0.5,  0.42, 0.05, 0.7,  0.6, 2.0,  120.0),
+    ("plate",     "Plate",     0.45, 0.65, 0.1,  0.55, 1.0, 0.0,  300.0),
+    ("hall",      "Hall",      0.5,  0.78, 0.35, 0.6,  1.0, 25.0, 150.0),
+    ("cathedral", "Cathedral", 0.55, 0.95, 0.2,  0.7,  1.0, 40.0, 120.0),
+    ("stadium",   "Stadium",   0.6,  0.9,  0.5,  0.65, 1.0, 60.0, 200.0),
+    ("dreamy",    "Dreamy",    0.7,  0.93, 0.6,  0.85, 1.0, 30.0, 300.0),
+];
+
+impl ReverbSettings {
+    /// Settings for a preset id (keeps `enabled`).
+    pub fn from_preset(id: &str, enabled: bool) -> Option<Self> {
+        REVERB_PRESETS.iter().find(|p| p.0 == id).map(|p| Self {
+            enabled,
+            mix: p.2,
+            room_size: p.3,
+            damping: p.4,
+            wet: p.5,
+            dry: 1.0,
+            width: p.6,
+            pre_delay_ms: p.7,
+            low_cut_hz: p.8,
+            preset_id: p.0.into(),
+        })
+    }
+}
+
+/// Spatial processor (spec §4.2 `SpatialSettings`, constants §4.6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpatialSettings {
+    /// Headphone crossfeed.
+    pub crossfeed_enabled: bool,
+    pub crossfeed_cutoff_hz: f32,
+    pub crossfeed_feed_db: f32,
+    /// Virtual speakers (spherical-head model).
+    pub virtual_speakers: bool,
+    pub speaker_angle_deg: f32,
+    pub surround: bool,
+    /// Sum to mono.
+    pub mono: bool,
+    /// Stereo width 0 (mono) – 2 (extra wide); 1 = unchanged.
+    pub width: f32,
+}
+
+impl Default for SpatialSettings {
+    fn default() -> Self {
+        Self {
+            crossfeed_enabled: false,
+            crossfeed_cutoff_hz: 700.0,
+            crossfeed_feed_db: 4.5,
+            virtual_speakers: false,
+            speaker_angle_deg: 30.0,
+            surround: false,
+            mono: false,
+            width: 1.0,
         }
     }
 }
