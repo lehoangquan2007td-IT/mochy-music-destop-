@@ -80,12 +80,8 @@ fn lyrics(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, lv: &mut Lyric
             }
         });
         ui.with_layout(Layout::top_down(Align::Min), |ui| {
-            let mut style: egui::Style = ui.style().as_ref().clone();
             let scale = d.lyrics_scale.clamp(0.5, 2.5);
-            for f in style.text_styles.values_mut() {
-                f.size *= scale;
-            }
-            ui.set_style(style);
+            lv.font_size = crate::ui::lyrics_view::LyricsView::default().font_size * scale;
             if let Some(t) = lv.show(ui, d.lyrics, now.pos, offset, cx.accent) {
                 cx.act(Action::Seek(t));
             }

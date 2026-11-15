@@ -71,18 +71,12 @@ impl DbWorker {
     }
 }
 
-/// Insert a song row only when it doesn't exist yet. `upsert_song` is an
-/// `INSERT OR REPLACE` that would reset likes / play time of existing rows,
-/// so existing rows are left untouched.
+/// Insert or merge a song row. `Db::upsert_song` merges (it never wipes likes,
+/// library state, play time or known metadata), so it is safe to call for
+/// songs that already exist.
 pub fn ensure_song(db: &Db, song: &Song) {
-    match db.get_song(&song.id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            if let Err(e) = db.upsert_song(song) {
-                tracing::warn!(id = %song.id, "upsert_song failed: {e}");
-            }
-        }
-        Err(e) => tracing::warn!(id = %song.id, "get_song failed: {e}"),
+    if let Err(e) = db.upsert_song(song) {
+        tracing::warn!(id = %song.id, "upsert_song failed: {e}");
     }
 }
 

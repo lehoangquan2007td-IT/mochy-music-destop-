@@ -695,8 +695,14 @@ impl MochyApp {
             }
             Action::LyricsOffset(delta) => {
                 if let Some(id) = self.player.current().map(|s| s.id.clone()) {
-                    // In-session only: storage has no safe partial update for lyricsOffset yet.
-                    self.player.queue.for_each_song_mut(&id, |s| s.lyrics_offset_ms += delta);
+                    let mut new_offset = 0;
+                    self.player.queue.for_each_song_mut(&id, |s| {
+                        s.lyrics_offset_ms += delta;
+                        new_offset = s.lyrics_offset_ms;
+                    });
+                    self.svc.db.run(move |db| {
+                        crate::db::log_err("set_lyrics_offset", db.set_lyrics_offset(&id, new_offset));
+                    });
                 }
             }
         }
