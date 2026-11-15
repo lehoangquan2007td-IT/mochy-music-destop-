@@ -363,6 +363,7 @@ impl MochyApp {
 
     fn submit_search(&mut self, q: String) {
         self.search.submitted = Some(q.clone());
+        self.search.suggest_open = false;
         self.search.results = Some(LoadState::Loading);
         self.search.query = q.clone();
         self.search.filter = crate::pages::search::Filter::All;

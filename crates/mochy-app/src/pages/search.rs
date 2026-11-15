@@ -48,6 +48,12 @@ pub struct SearchState {
     pub videos: Arc<Vec<Song>>,
     pub filter: Filter,
     pub focus_request: bool,
+    /// Suggestion/history list is open. Kept as explicit state (not derived
+    /// from the text box focus): pressing the mouse on a suggestion takes
+    /// focus away from the box on *press*, while the click only registers on
+    /// *release* — deriving visibility from focus made the list vanish in
+    /// between, so clicks on suggestions were lost.
+    pub suggest_open: bool,
 }
 
 impl Default for SearchState {
@@ -63,6 +69,7 @@ impl Default for SearchState {
             videos: Arc::default(),
             filter: Filter::All,
             focus_request: false,
+            suggest_open: false,
         }
     }
 }
@@ -101,79 +108,9 @@ pub enum SearchEvent {
 }
 
 pub fn show(ui: &mut Ui, cx: &mut Ctx, st: &mut SearchState, history: &[String]) -> Option<SearchEvent> {
-    let mut ev = None;
-
-    // --- search box ---------------------------------------------------------
-    let edit_id = Id::unique("mochy_search_box");
-    let frame = egui::Frame::new().fill(widgets::SURFACE_2).corner_radius(CornerRadius::same(22)).inner_margin(egui::Margin::symmetric(14, 8));
-    let mut te_resp = None;
-    frame.show(ui, |ui| {
-        ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
-            icons::paint(ui.painter(), r, Icon::Search, TEXT_DIM);
-            let w = ui.available_width() - 34.0;
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut st.query)
-                    .id(edit_id)
-                    .hint_text("Search songs, albums, artists, playlists")
-                    .font(FontId::proportional(16.0))
-                    .frame(egui::Frame::NONE)
-                    .desired_width(w),
-            );
-            if !st.query.is_empty() && icons::icon_button(ui, Icon::Close, 26.0, false, cx.accent).clicked() {
-                st.query.clear();
-                st.suggestions.clear();
-                st.suggestions_for.clear();
-                resp.request_focus();
-            }
-            te_resp = Some(resp);
-        });
-    });
-    let te = te_resp.expect("search box");
-    if st.focus_request {
-        st.focus_request = false;
-        te.request_focus();
-    }
-    if te.changed() {
-        st.edited_at = Some(Instant::now());
-        if st.query.trim().is_empty() {
-            ev = Some(SearchEvent::ClearSuggestions);
-        }
-    }
-    let enter = te.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-    if enter && !st.query.trim().is_empty() {
-        ev = Some(SearchEvent::Submit(st.query.trim().to_string()));
-    }
-    ui.add_space(10.0);
-
-    // --- suggestions / history ----------------------------------------------
-    let typing = te.has_focus() && st.submitted.as_deref() != Some(st.query.trim());
-    if typing || st.submitted.is_none() {
-        let mut pick: Option<String> = None;
-        if !st.query.trim().is_empty() && !st.suggestions.is_empty() {
-            for s in st.suggestions.iter().take(8) {
-                if suggestion_row(ui, Icon::Search, s).clicked() {
-                    pick = Some(s.clone());
-                }
-            }
-            ui.add_space(8.0);
-        }
-        if st.query.trim().is_empty() && !history.is_empty() {
-            widgets::section_title(ui, "Recent searches");
-            for h in history.iter().take(12) {
-                if suggestion_row(ui, Icon::Back, h).clicked() {
-                    pick = Some(h.clone());
-                }
-            }
-        }
-        if let Some(p) = pick {
-            st.query = p.clone();
-            ev = Some(SearchEvent::Submit(p));
-        }
-        if st.submitted.is_none() {
-            return ev;
-        }
-        ui.add_space(8.0);
+    let (mut ev, show_results) = search_header(ui, cx.accent, st, history);
+    if !show_results {
+        return ev;
     }
 
     // --- results ------------------------------------------------------------
@@ -200,6 +137,105 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, st: &mut SearchState, history: &[String])
         }
     }
     ev
+}
+
+/// Search box + suggestion/history list. Returns the event (if any) and
+/// whether the results section should be drawn below.
+fn search_header(ui: &mut Ui, accent: Color32, st: &mut SearchState, history: &[String]) -> (Option<SearchEvent>, bool) {
+    let mut ev = None;
+
+    // --- search box ---------------------------------------------------------
+    let edit_id = Id::unique("mochy_search_box");
+    let frame = egui::Frame::new().fill(widgets::SURFACE_2).corner_radius(CornerRadius::same(22)).inner_margin(egui::Margin::symmetric(14, 8));
+    let mut te_resp = None;
+    frame.show(ui, |ui| {
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
+            icons::paint(ui.painter(), r, Icon::Search, TEXT_DIM);
+            let w = ui.available_width() - 34.0;
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut st.query)
+                    .id(edit_id)
+                    .hint_text("Search songs, albums, artists, playlists")
+                    .font(FontId::proportional(16.0))
+                    .frame(egui::Frame::NONE)
+                    .desired_width(w),
+            );
+            if !st.query.is_empty() && icons::icon_button(ui, Icon::Close, 26.0, false, accent).clicked() {
+                st.query.clear();
+                st.suggestions.clear();
+                st.suggestions_for.clear();
+                resp.request_focus();
+            }
+            te_resp = Some(resp);
+        });
+    });
+    let te = te_resp.expect("search box");
+    if st.focus_request {
+        st.focus_request = false;
+        te.request_focus();
+    }
+    if te.gained_focus() {
+        st.suggest_open = true;
+    }
+    if te.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+        st.suggest_open = false;
+    }
+    if te.changed() {
+        st.suggest_open = true;
+        st.edited_at = Some(Instant::now());
+        if st.query.trim().is_empty() {
+            ev = Some(SearchEvent::ClearSuggestions);
+        }
+    }
+    let enter = te.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+    if enter && !st.query.trim().is_empty() {
+        st.suggest_open = false;
+        ev = Some(SearchEvent::Submit(st.query.trim().to_string()));
+    }
+    ui.add_space(10.0);
+
+    // --- suggestions / history ----------------------------------------------
+    if st.suggest_open || st.submitted.is_none() {
+        let mut pick: Option<String> = None;
+        let list_top = ui.cursor().top();
+        if !st.query.trim().is_empty() && !st.suggestions.is_empty() {
+            for s in st.suggestions.iter().take(8) {
+                if suggestion_row(ui, Icon::Search, s).clicked() {
+                    pick = Some(s.clone());
+                }
+            }
+            ui.add_space(8.0);
+        }
+        if st.query.trim().is_empty() && !history.is_empty() {
+            widgets::section_title(ui, "Recent searches");
+            for h in history.iter().take(12) {
+                if suggestion_row(ui, Icon::Back, h).clicked() {
+                    pick = Some(h.clone());
+                }
+            }
+        }
+        let list_rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), list_top..=ui.cursor().top());
+        if let Some(p) = pick {
+            st.query = p.clone();
+            st.suggest_open = false;
+            ev = Some(SearchEvent::Submit(p));
+        } else if st.suggest_open
+            && !te.has_focus()
+            && ui.input(|i| i.pointer.any_click())
+            && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+            && !list_rect.contains(pos)
+            && !te.rect.expand(16.0).contains(pos)
+        {
+            // Clicked somewhere else on the page: close the list.
+            st.suggest_open = false;
+        }
+        if st.submitted.is_none() {
+            return (ev, false);
+        }
+        ui.add_space(8.0);
+    }
+    (ev, true)
 }
 
 fn suggestion_row(ui: &mut Ui, icon: Icon, text: &str) -> egui::Response {
@@ -273,4 +309,106 @@ fn cards(ui: &mut Ui, title: &str, row: bool, n: usize, mut f: impl FnMut(&mut U
         });
     }
     ui.add_space(12.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Drives the real search header through egui frames with synthetic input.
+    struct Harness {
+        ctx: egui::Context,
+        st: SearchState,
+        events: Vec<egui::Event>,
+        last: Vec<SearchEvent>,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            Self { ctx: egui::Context::default(), st: SearchState::default(), events: Vec::new(), last: Vec::new() }
+        }
+
+        fn frame(&mut self) {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(900.0, 700.0))),
+                events: std::mem::take(&mut self.events),
+                ..Default::default()
+            };
+            let st = &mut self.st;
+            let last = &mut self.last;
+            let mut out = self.ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    let (ev, _) = search_header(ui, Color32::WHITE, st, &[]);
+                    if let Some(e) = ev {
+                        last.push(e);
+                    }
+                });
+            });
+            out.textures_delta.clear();
+        }
+
+        fn click_at(&mut self, pos: egui::Pos2) {
+            self.events.push(egui::Event::PointerMoved(pos));
+            self.frame();
+            self.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+            self.frame(); // press: the text box loses focus here
+            self.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+            self.frame(); // release: the click registers here
+        }
+
+        fn submitted(&self) -> Vec<String> {
+            self.last.iter().filter_map(|e| if let SearchEvent::Submit(q) = e { Some(q.clone()) } else { None }).collect()
+        }
+    }
+
+    /// y of the n-th suggestion row: search box (~40 px) + 10 px gap, rows 36 px.
+    fn row_y(h: &Harness, n: usize) -> f32 {
+        let _ = h;
+        8.0 + 40.0 + 10.0 + 36.0 * n as f32 + 18.0
+    }
+
+    fn type_and_get_suggestions(h: &mut Harness, text: &str, sugg: &[&str]) {
+        h.st.focus_request = true;
+        h.frame();
+        h.frame();
+        h.events.push(egui::Event::Text(text.into()));
+        h.frame();
+        // Suggestions arrive from the network.
+        h.st.suggestions_for = text.into();
+        h.st.suggestions = sugg.iter().map(|s| s.to_string()).collect();
+        h.frame();
+    }
+
+    #[test]
+    fn clicking_a_suggestion_submits_it_first_search() {
+        let mut h = Harness::new();
+        type_and_get_suggestions(&mut h, "son tung", &["sơn tùng m-tp", "son tung mtp"]);
+        h.click_at(egui::pos2(200.0, row_y(&h, 1)));
+        assert_eq!(h.submitted(), vec!["son tung mtp".to_string()]);
+    }
+
+    #[test]
+    fn clicking_a_suggestion_submits_it_after_a_previous_search() {
+        // The reported bug: with results of an earlier search on screen,
+        // the list vanished on mouse-press and the click was lost.
+        let mut h = Harness::new();
+        h.st.submitted = Some("believer".into());
+        h.st.results = Some(LoadState::Loading);
+        type_and_get_suggestions(&mut h, "lac troi", &["lạc trôi", "lạc trôi sơn tùng"]);
+        h.click_at(egui::pos2(200.0, row_y(&h, 0)));
+        assert_eq!(h.submitted(), vec!["lạc trôi".to_string()]);
+        assert!(!h.st.suggest_open, "list closes after picking");
+    }
+
+    #[test]
+    fn clicking_elsewhere_closes_the_list() {
+        let mut h = Harness::new();
+        h.st.submitted = Some("believer".into());
+        h.st.results = Some(LoadState::Loading);
+        type_and_get_suggestions(&mut h, "abc", &["abc def"]);
+        assert!(h.st.suggest_open);
+        h.click_at(egui::pos2(200.0, 650.0));
+        assert!(h.submitted().is_empty());
+        assert!(!h.st.suggest_open);
+    }
 }
