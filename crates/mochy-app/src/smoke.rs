@@ -105,7 +105,34 @@ pub fn run(rt: tokio::runtime::Handle, query: &str, secs: u64) -> i32 {
     let mut max_pos = 0.0f64;
     let mut last_log = Instant::now();
     let mut last_activity = Instant::now();
+    // Scripted transport checks: (secs after start, action). Seek far forward,
+    // seek back, then skip to the (prefetched) next track.
+    let script: [(u64, &str); 3] = [(6, "seek150"), (11, "seek30"), (16, "next")];
+    let mut script_i = 0usize;
+    let mut seek_at: Option<(Instant, f64)> = None;
     loop {
+        if let Some(t) = play_started
+            && script_i < script.len()
+            && t.elapsed() >= Duration::from_secs(script[script_i].0)
+        {
+            match script[script_i].1 {
+                "seek150" => {
+                    tracing::info!("smoke: seeking to 150 s");
+                    ctl.seek(150.0);
+                    seek_at = Some((Instant::now(), 150.0));
+                }
+                "seek30" => {
+                    tracing::info!("smoke: seeking back to 30 s");
+                    ctl.seek(30.0);
+                    seek_at = Some((Instant::now(), 30.0));
+                }
+                _ => {
+                    tracing::info!("smoke: skipping to next track");
+                    ctl.next();
+                }
+            }
+            script_i += 1;
+        }
         let now = Instant::now();
         if now >= deadline {
             break;
@@ -128,6 +155,13 @@ pub fn run(rt: tokio::runtime::Handle, query: &str, secs: u64) -> i32 {
                 match &ev {
                     Event::Progress { pos_secs, .. } => {
                         max_pos = max_pos.max(*pos_secs);
+                        if let Some((t0, target)) = seek_at
+                            && (*pos_secs - target).abs() < 1.5
+                            && *pos_secs > target
+                        {
+                            tracing::info!(target, ms = t0.elapsed().as_millis() as u64, "smoke: seek landed");
+                            seek_at = None;
+                        }
                         if last_log.elapsed() > Duration::from_secs(2) {
                             last_log = Instant::now();
                             tracing::info!(pos = format!("{pos_secs:.1}"), dur = ?ctl.duration, "smoke: progress");

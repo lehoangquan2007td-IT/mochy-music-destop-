@@ -22,7 +22,10 @@ const PREFETCH_AFTER_SECS: f64 = 5.0;
 const PREFETCH_TTL: Duration = Duration::from_secs(30 * 60);
 const QUEUE_SAVE_DEBOUNCE: Duration = Duration::from_millis(1500);
 const MIN_RECORD_SECS: f64 = 5.0;
-const MAX_FAIL_STREAK: usize = 8;
+/// Consecutive failed tracks before auto-skip gives up. Kept small: when
+/// YouTube is refusing streams every skip costs a full client walk (~8
+/// requests) and makes the bot-check worse.
+const MAX_FAIL_STREAK: usize = 3;
 
 /// A track ready for `Command::Load`.
 #[derive(Debug, Clone)]

@@ -278,7 +278,7 @@ pub enum AudioFormat {
 impl AudioFormat {
     /// True when mochy-audio (symphonia/rodio) can decode it in MVP.
     pub fn decodable(self) -> bool {
-        matches!(self, AudioFormat::AacM4a | AudioFormat::Mp3 | AudioFormat::Flac)
+        matches!(self, AudioFormat::AacM4a | AudioFormat::OpusWebm | AudioFormat::Mp3 | AudioFormat::Flac)
     }
 }
 

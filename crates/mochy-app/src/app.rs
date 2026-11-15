@@ -1424,12 +1424,13 @@ impl MochyApp {
     fn run_shots(&mut self, ctx: &egui::Context) {
         let Some(sr) = self.shots.as_mut() else { return };
         // (name, route, seconds to wait before the shot — Home waits for network/art)
-        let steps: [(&str, Route, f32); 5] = [
+        let steps: [(&str, Route, f32); 6] = [
             ("home", Route::Home, 12.0),
             ("search", Route::Search, 3.0),
             ("library", Route::Library(LibTab::History), 3.0),
             ("audio_lab", Route::AudioLab, 3.0),
             ("settings", Route::Settings, 3.0),
+            ("now_playing", Route::Home, 8.0),
         ];
         ctx.request_repaint_after(Duration::from_millis(100));
         if sr.step >= steps.len() {
@@ -1439,6 +1440,20 @@ impl MochyApp {
             return;
         }
         let (name, route, wait) = steps[sr.step].clone();
+        self.np_open = name == "now_playing";
+        if self.np_open {
+            self.np_tab = SideTab::Lyrics;
+        }
+        // Start a song for the Now Playing shot (`MOCHY_SHOTS_VIDEO=<videoId>`).
+        if sr.step == 0
+            && !sr.taken
+            && self.player.current().is_none()
+            && let Ok(vid) = std::env::var("MOCHY_SHOTS_VIDEO")
+        {
+            let mut song = mochy_core::models::Song::remote(vid.clone(), "Loading…");
+            song.thumbnail_url = Some(format!("https://i.ytimg.com/vi/{vid}/hqdefault.jpg"));
+            self.player.play_with_radio(song);
+        }
         if self.nav.current() != &route {
             self.nav.go(route);
         }
