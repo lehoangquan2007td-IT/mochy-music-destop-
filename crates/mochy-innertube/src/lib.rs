@@ -1,30 +1,41 @@
 //! mochy-innertube — YouTube Music InnerTube client (spec §2).
 //!
 //! Contract for mochy-app: async methods on [`YtmClient`], returning
-//! `mochy-core` model types. All network access is async (tokio).
+//! `mochy-core` model types. All network access is async (tokio). The client
+//! is cheap to `Clone` (shared `Arc` state) and `Send + Sync`.
 //!
-//! Stream acquisition order (spec §2.4): InnerTubeX backend (skip in MVP),
-//! then the client walk **VISIONOS first** (no PoToken) → WEB_REMIX →
-//! TVHTML5_SAMSUNG / WEB_EMBEDDED_PLAYER / TVHTML5_DOWNGRADED, then NewPipe
-//! decipher fallback. Every candidate URL MUST be validated with a ranged
-//! GET at the last byte (probe byte 1_048_576 for untokened URLs).
+//! Browse/search/next use the `WEB_REMIX` client against
+//! `music.youtube.com`. Streams follow the Kotlin client walk
+//! (`YTPlayerUtils.kt`): **VISIONOS first** (direct URLs that serve the whole
+//! file, no PoToken, its own visitor id), then the untokened native clients.
+//! Clients that need a BotGuard PoToken or JS signature/`n` deciphering
+//! (WEB_REMIX, WEB, TV/embedded) are skipped — that needs a JS engine.
+//! Every candidate URL is validated with a ranged GET at its last byte
+//! (`contentLength - 1`, or byte 1 MiB when unknown) because untokened URLs
+//! are cut off after ~786 KB.
 //!
-//! MVP codec preference: **mp4a (AAC, e.g. itag 140) over opus** — the audio
-//! engine cannot decode opus in MVP (symphonia lacks it). Rank AAC first and
-//! mark others clearly in `StreamResult::format`.
+//! Codec preference: **mp4a (AAC, itag 140/139) over opus** by default — the
+//! audio engine may not decode opus. Opus candidates stay available in
+//! [`StreamResult::alternatives`] and via [`CodecPreference::PreferOpus`].
 
-use std::sync::RwLock;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
-use mochy_core::models::{Album, Artist, Playlist, QueueItem, SearchResults, Shelf, Song, TrackMeta};
+use mochy_core::models::{Album, Artist, Playlist, QueueItem, SearchResults, Shelf, ShelfItem, Song, TrackMeta};
 use mochy_core::settings::AudioQuality;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use thiserror::Error;
+
+pub mod parse;
+mod stream;
+
+pub use clients::ClientSpec;
 
 pub const BASE_URL: &str = "https://music.youtube.com/youtubei/v1";
 pub const ORIGIN: &str = "https://music.youtube.com";
 
-/// Client ids/versions (spec §2.2).
+/// Client ids/versions (spec §2.2, `YouTubeClient.kt`).
 pub mod clients {
     pub const WEB_ID: &str = "1";
     pub const WEB_VERSION: &str = "2.20260708.00.00";
@@ -33,12 +44,215 @@ pub mod clients {
     pub const VISIONOS_ID: &str = "101";
     pub const VISIONOS_VERSION: &str = "1.04";
     pub const WEB_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0";
-    /// Untokened URLs serve only ~786 KB; probe here (spec §2.6).
+    /// Untokened URLs serve only ~786 KB; probe here when the length is unknown (spec §2.6).
     pub const UNTOKENED_WINDOW_PROBE_BYTE: u64 = 1_048_576;
-    /// Give-up time for a backend attempt (spec §2.4).
+    /// Give-up time for one backend/player attempt (spec §2.4).
     pub const BACKEND_TIMEOUT_MS: u64 = 12_000;
     /// Queue cap (spec §2.3).
     pub const MAX_GET_QUEUE_SIZE: usize = 1000;
+
+    pub const ORIGIN_YOUTUBE: &str = "https://www.youtube.com";
+    pub const ORIGIN_YOUTUBE_MUSIC: &str = "https://music.youtube.com";
+
+    /// One InnerTube client identity (port of Kotlin `YouTubeClient`).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ClientSpec {
+        pub name: &'static str,
+        pub version: &'static str,
+        /// Numeric id sent as `X-YouTube-Client-Name`.
+        pub id: &'static str,
+        pub user_agent: &'static str,
+        pub os_name: Option<&'static str>,
+        pub os_version: Option<&'static str>,
+        pub device_make: Option<&'static str>,
+        pub device_model: Option<&'static str>,
+        pub android_sdk_version: Option<&'static str>,
+        /// Where this client's API lives (`www.youtube.com` for app/TV clients).
+        pub api_origin: &'static str,
+        pub api_format_version: &'static str,
+        pub client_screen: Option<&'static str>,
+        /// `Some` for native apps: they send no Origin/Referer.
+        pub platform: Option<&'static str>,
+        /// Mints its own visitor id via `visitor_id` instead of the web one.
+        pub own_visitor_id: bool,
+        pub login_required: bool,
+        pub use_signature_timestamp: bool,
+        pub use_web_po_tokens: bool,
+        pub is_embedded: bool,
+    }
+
+    impl ClientSpec {
+        const fn base(name: &'static str, version: &'static str, id: &'static str, ua: &'static str) -> Self {
+            Self {
+                name,
+                version,
+                id,
+                user_agent: ua,
+                os_name: None,
+                os_version: None,
+                device_make: None,
+                device_model: None,
+                android_sdk_version: None,
+                api_origin: ORIGIN_YOUTUBE_MUSIC,
+                api_format_version: "1",
+                client_screen: None,
+                platform: None,
+                own_visitor_id: false,
+                login_required: false,
+                use_signature_timestamp: false,
+                use_web_po_tokens: false,
+                is_embedded: false,
+            }
+        }
+
+        /// Native apps send no Origin/Referer headers.
+        pub fn is_native_app(&self) -> bool {
+            self.platform.is_some()
+        }
+
+        /// Headers googlevideo expects on media requests from URLs minted by
+        /// this client (`YTPlayerUtils.streamHeaders`).
+        pub fn stream_headers(&self) -> Vec<(String, String)> {
+            let origin = match self.name {
+                "WEB_REMIX" => "https://music.youtube.com",
+                "WEB_CREATOR" => "https://studio.youtube.com",
+                _ => "https://www.youtube.com",
+            };
+            vec![
+                ("User-Agent".into(), self.user_agent.into()),
+                ("Accept".into(), "*/*".into()),
+                ("Accept-Language".into(), "en-US,en;q=0.9".into()),
+                ("Referer".into(), format!("{origin}/")),
+                ("Origin".into(), origin.into()),
+            ]
+        }
+    }
+
+    pub const WEB: ClientSpec = ClientSpec { use_web_po_tokens: false, ..ClientSpec::base("WEB", WEB_VERSION, WEB_ID, WEB_UA) };
+
+    pub const WEB_REMIX: ClientSpec = ClientSpec {
+        use_signature_timestamp: true,
+        use_web_po_tokens: true,
+        ..ClientSpec::base("WEB_REMIX", WEB_REMIX_VERSION, WEB_REMIX_ID, WEB_UA)
+    };
+
+    /// The YouTube app on Apple Vision Pro — main stream client.
+    pub const VISIONOS: ClientSpec = ClientSpec {
+        os_name: Some("visionOS"),
+        os_version: Some("26.6.0.23O770"),
+        device_make: Some("Apple"),
+        device_model: Some("RealityDevice17,1"),
+        api_origin: ORIGIN_YOUTUBE,
+        api_format_version: "2",
+        client_screen: Some("WATCH"),
+        platform: Some("MOBILE"),
+        own_visitor_id: true,
+        ..ClientSpec::base(
+            "VISIONOS",
+            VISIONOS_VERSION,
+            VISIONOS_ID,
+            "com.google.visionos.youtube/1.04(RealityDevice17,1; U; CPU visionOS 26_6_0 like Mac OS X; US)",
+        )
+    };
+
+    pub const IPADOS: ClientSpec = ClientSpec {
+        os_name: Some("iPadOS"),
+        os_version: Some("17.7.10.21H450"),
+        device_make: Some("Apple"),
+        device_model: Some("iPad7,6"),
+        ..ClientSpec::base(
+            "IOS",
+            "21.03.3",
+            "5",
+            "com.google.ios.youtube/21.03.3 (iPad7,6; U; CPU iPadOS 17_7_10 like Mac OS X; en-US)",
+        )
+    };
+
+    pub const ANDROID_VR_1_43_32: ClientSpec = ClientSpec {
+        os_name: Some("Android"),
+        os_version: Some("12"),
+        device_make: Some("Oculus"),
+        device_model: Some("Quest 3"),
+        android_sdk_version: Some("32"),
+        ..ClientSpec::base(
+            "ANDROID_VR",
+            "1.43.32",
+            "28",
+            "com.google.android.apps.youtube.vr.oculus/1.43.32 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/107.0.5284.2)",
+        )
+    };
+
+    pub const ANDROID_VR_1_61_48: ClientSpec = ClientSpec {
+        os_name: Some("Android"),
+        os_version: Some("12"),
+        device_make: Some("Oculus"),
+        device_model: Some("Quest 3"),
+        android_sdk_version: Some("32"),
+        ..ClientSpec::base(
+            "ANDROID_VR",
+            "1.61.48",
+            "28",
+            "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/132.0.6808.3)",
+        )
+    };
+
+    pub const ANDROID_VR_1_65_10: ClientSpec = ClientSpec {
+        os_name: Some("Android"),
+        os_version: Some("12L"),
+        device_make: Some("Oculus"),
+        device_model: Some("Quest 3"),
+        android_sdk_version: Some("32"),
+        ..ClientSpec::base(
+            "ANDROID_VR",
+            "1.65.10",
+            "28",
+            "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+        )
+    };
+
+    pub const ANDROID_VR_NO_AUTH: ClientSpec = ClientSpec::base(
+        "ANDROID_VR",
+        "1.61.48",
+        "28",
+        "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; en_US; Oculus Quest 3; Build/SQ3A.220605.009.A1; Cronet/132.0.6808.3)",
+    );
+
+    pub const MOBILE: ClientSpec = ClientSpec {
+        os_name: Some("Android"),
+        os_version: Some("11"),
+        use_signature_timestamp: true,
+        ..ClientSpec::base("ANDROID", "21.26.364", "3", "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip")
+    };
+
+    pub const ANDROID_CREATOR: ClientSpec = ClientSpec {
+        os_name: Some("Android"),
+        os_version: Some("15"),
+        device_make: Some("Google"),
+        device_model: Some("Pixel 9 Pro Fold"),
+        android_sdk_version: Some("35"),
+        use_signature_timestamp: true,
+        ..ClientSpec::base(
+            "ANDROID_CREATOR",
+            "25.03.101",
+            "14",
+            "com.google.android.apps.youtube.creator/25.03.101 (Linux; U; Android 15; en_US; Pixel 9 Pro Fold; Build/AP3A.241005.015.A2; Cronet/132.0.6779.0)",
+        )
+    };
+
+    /// Stream client walk (Kotlin `STREAM_FALLBACK_CLIENTS` order) restricted
+    /// to clients that hand out direct URLs without login, PoToken or JS
+    /// deciphering. Only VISIONOS has been measured to serve full files; the
+    /// rest usually fail validation (cut off at ~786 KB) but cost one request.
+    pub const STREAM_WALK: &[ClientSpec] = &[
+        VISIONOS,
+        IPADOS,
+        ANDROID_VR_1_43_32,
+        ANDROID_VR_1_61_48,
+        ANDROID_VR_1_65_10,
+        ANDROID_VR_NO_AUTH,
+        ANDROID_CREATOR,
+        MOBILE,
+    ];
 }
 
 /// Search filter params (exact, URL-encoded protobufs — spec §2.3).
@@ -68,6 +282,40 @@ impl AudioFormat {
     }
 }
 
+/// Which codec family to rank first when choosing a stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CodecPreference {
+    /// AAC (mp4a) first, Opus kept as alternatives. Default.
+    #[default]
+    PreferAac,
+    /// Opus (webm) first, AAC as alternatives.
+    PreferOpus,
+    /// AAC only (fail rather than return Opus).
+    AacOnly,
+}
+
+/// One audio format from a player response (unvalidated unless it is the
+/// primary of a [`StreamResult`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamCandidate {
+    pub url: String,
+    pub format: AudioFormat,
+    pub itag: Option<u32>,
+    /// e.g. `audio/mp4; codecs="mp4a.40.2"`.
+    pub mime_type: String,
+    /// e.g. `mp4a.40.2` (AAC-LC), `mp4a.40.5` (HE-AAC), `opus`.
+    pub codecs: Option<String>,
+    pub bitrate_kbps: Option<u32>,
+    pub sample_rate_hz: Option<u32>,
+    pub channels: Option<u32>,
+    pub content_length: Option<u64>,
+    pub approx_duration_ms: Option<u64>,
+    /// dB above the −14 LKFS reference; normalization gain = `-loudness_db`.
+    pub loudness_db: Option<f32>,
+    /// `AUDIO_QUALITY_LOW|MEDIUM|HIGH`.
+    pub audio_quality: Option<String>,
+}
+
 /// A validated, playable stream (spec §2.5/§2.6).
 #[derive(Debug, Clone)]
 pub struct StreamResult {
@@ -77,10 +325,66 @@ pub struct StreamResult {
     pub bitrate_kbps: Option<u32>,
     pub sample_rate_hz: Option<u32>,
     pub content_length: Option<u64>,
-    /// Loudness from player response (`loudnessDb`), used for normalization.
+    /// Loudness relative to −14 LKFS (`loudnessDb`), used for normalization:
+    /// apply `-loudness_db` dB of gain.
     pub loudness_db: Option<f32>,
-    /// Headers that must accompany the media request.
+    /// Headers that must accompany the media request (User-Agent, Origin, …).
     pub headers: Vec<(String, String)>,
+    /// Unix seconds after which the URL stops working (`expire=` param;
+    /// ~6 h after resolving). Re-resolve shortly before this.
+    pub expires_at_unix: Option<u64>,
+    /// InnerTube client whose URL validated (e.g. `VISIONOS`).
+    pub client: String,
+    pub mime_type: String,
+    pub codecs: Option<String>,
+    pub channels: Option<u32>,
+    pub approx_duration_ms: Option<u64>,
+    /// Other formats of the same response (same `headers`), best-first —
+    /// includes Opus/webm when AAC was chosen. Not individually validated.
+    pub alternatives: Vec<StreamCandidate>,
+}
+
+impl StreamResult {
+    pub(crate) fn from_candidate(
+        c: StreamCandidate,
+        alternatives: Vec<StreamCandidate>,
+        headers: Vec<(String, String)>,
+        client: String,
+        expires_at_unix: Option<u64>,
+    ) -> Self {
+        Self {
+            url: c.url,
+            format: c.format,
+            itag: c.itag,
+            bitrate_kbps: c.bitrate_kbps,
+            sample_rate_hz: c.sample_rate_hz,
+            content_length: c.content_length,
+            loudness_db: c.loudness_db,
+            headers,
+            expires_at_unix,
+            client,
+            mime_type: c.mime_type,
+            codecs: c.codecs,
+            channels: c.channels,
+            approx_duration_ms: c.approx_duration_ms,
+            alternatives,
+        }
+    }
+
+    /// True when the URL expires within `margin` from now (or is unknown).
+    pub fn expires_within(&self, margin: Duration) -> bool {
+        let Some(exp) = self.expires_at_unix else { return true };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        exp <= now + margin.as_secs()
+    }
+
+    /// First alternative with the given format (e.g. Opus fallback).
+    pub fn alternative(&self, format: AudioFormat) -> Option<&StreamCandidate> {
+        self.alternatives.iter().find(|c| c.format == format)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -95,1501 +399,551 @@ pub enum YtmError {
     PremiumOnly(String),
     #[error("{0}")]
     Other(String),
+    /// HTTP 429: YouTube is limiting this network; retry in a few minutes.
+    #[error("rate limited by YouTube (HTTP 429)")]
+    RateLimited,
 }
 
 pub type YtmResult<T> = Result<T, YtmError>;
 
-/// InnerTube client. `Clone` is cheap and shares state.
-#[derive(Debug)]
-pub struct YtmClient {
-    pub http: reqwest::Client,
-    visitor_data: RwLock<String>,
+/// Content language (`hl`) and country (`gl`) sent in every context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Locale {
+    pub hl: String,
+    pub gl: String,
 }
 
+impl Default for Locale {
+    fn default() -> Self {
+        Self { hl: "en".into(), gl: "US".into() }
+    }
+}
+
+#[derive(Debug, Default)]
+struct Inner {
+    /// Web visitor data (`sw.js_data` / `visitor_id`).
+    visitor_data: RwLock<String>,
+    /// Visitor ids minted by clients that bring their own (VISIONOS).
+    own_visitors: Mutex<HashMap<&'static str, String>>,
+    locale: RwLock<Locale>,
+    /// VISIONOS is left alone until then after two bot checks in a row.
+    visionos_resting_until: Mutex<Option<Instant>>,
+}
+
+/// InnerTube client. `Clone` is cheap and shares state (visitor data,
+/// locale, bot-check backoff). `Send + Sync`.
+#[derive(Debug, Clone)]
+pub struct YtmClient {
+    pub http: reqwest::Client,
+    inner: Arc<Inner>,
+}
+
+const RETRY_ATTEMPTS: u32 = 3;
+const RETRY_INITIAL_DELAY_MS: u64 = 500;
+const BOT_CHECK_REST: Duration = Duration::from_secs(30 * 60);
+
 // ---------------------------------------------------------------------------
-// Helpers
+// Transport helpers
 // ---------------------------------------------------------------------------
 
 impl YtmClient {
-    /// Build the WEB_REMIX context JSON body with the current visitor data.
-    fn web_remix_context(&self) -> Value {
-        let vd = self.visitor_data.read().unwrap().clone();
-        json!({
-            "context": {
-                "client": {
-                    "clientName": "WEB_REMIX",
-                    "clientVersion": clients::WEB_REMIX_VERSION,
-                    "visitorData": vd,
-                    "hl": "en",
-                    "gl": "US"
-                }
+    fn build_http() -> YtmResult<reqwest::Client> {
+        reqwest::Client::builder()
+            .gzip(true)
+            .deflate(true)
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build()
+            .map_err(|e| YtmError::Network(format!("reqwest client build: {e}")))
+    }
+
+    fn locale(&self) -> Locale {
+        self.inner.locale.read().expect("locale lock").clone()
+    }
+
+    /// Build the InnerTube `context` for `client` (Kotlin `toContext`).
+    fn context(&self, client: &ClientSpec, visitor: Option<&str>) -> Value {
+        let loc = self.locale();
+        let mut c = json!({
+            "clientName": client.name,
+            "clientVersion": client.version,
+            "gl": loc.gl,
+            "hl": loc.hl,
+        });
+        let opt = [
+            ("clientScreen", client.client_screen),
+            ("platform", client.platform),
+            ("osName", client.os_name),
+            ("osVersion", client.os_version),
+            ("deviceMake", client.device_make),
+            ("deviceModel", client.device_model),
+            ("androidSdkVersion", client.android_sdk_version),
+        ];
+        for (k, v) in opt {
+            if let Some(v) = v {
+                c[k] = Value::String(v.to_string());
             }
+        }
+        if let Some(v) = visitor.filter(|v| !v.is_empty()) {
+            c["visitorData"] = Value::String(v.to_string());
+        }
+        if client.client_screen.is_some() {
+            c["utcOffsetMinutes"] = json!(0);
+        }
+        json!({
+            "client": c,
+            "request": { "internalExperimentFlags": [], "useSsl": true },
+            "user": { "lockedSafetyMode": false },
         })
     }
 
-    /// Build a VISIONOS context body (for player requests).
-    fn visionos_context(&self, visionos_visitor: &str) -> Value {
-        json!({
-            "context": {
-                "client": {
-                    "clientName": "IOS",
-                    "clientVersion": clients::VISIONOS_VERSION,
-                    "visitorData": visionos_visitor,
-                    "clientScreen": "WATCH"
-                }
+    /// POST `{api_origin}/youtubei/v1/{endpoint}` with retry on transient
+    /// failures (connect/timeout/5xx; 3 attempts, 500 ms backoff ×2).
+    async fn post_api(
+        &self,
+        client: &ClientSpec,
+        endpoint: &str,
+        body: Value,
+        visitor: Option<&str>,
+        timeout: Duration,
+    ) -> YtmResult<Value> {
+        let url = format!("{}/youtubei/v1/{}?prettyPrint=false", client.api_origin, endpoint);
+        let loc = self.locale();
+        let accept_lang = format!("{}-{},{};q=0.9", loc.hl, loc.gl, loc.hl);
+        let mut delay = Duration::from_millis(RETRY_INITIAL_DELAY_MS);
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let mut req = self
+                .http
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header("Accept-Language", &accept_lang)
+                .header("User-Agent", client.user_agent)
+                .header("X-Goog-Api-Format-Version", client.api_format_version)
+                .header("X-YouTube-Client-Name", client.id)
+                .header("X-YouTube-Client-Version", client.version)
+                .timeout(timeout)
+                .json(&body);
+            if !client.is_native_app() {
+                req = req.header("X-Origin", client.api_origin).header("Referer", format!("{}/", client.api_origin));
             }
-        })
-    }
-
-    /// POST to an InnerTube endpoint, return the JSON body.
-    async fn post_innertube(&self, endpoint: &str, body: Value) -> YtmResult<Value> {
-        let url = format!("{}/{}?prettyPrint=false", BASE_URL, endpoint);
-        let resp = self
-            .http
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("X-YouTube-Client-Name", clients::WEB_REMIX_ID)
-            .header("X-YouTube-Client-Version", clients::WEB_REMIX_VERSION)
-            .header("X-Origin", ORIGIN)
-            .json(&body)
-            .timeout(Duration::from_millis(clients::BACKEND_TIMEOUT_MS))
-            .send()
-            .await
-            .map_err(|e| YtmError::Network(e.to_string()))?;
-
-        let json: Value = resp.json().await.map_err(|e| YtmError::Network(e.to_string()))?;
-        Ok(json)
-    }
-
-    /// Mint visitor data from sw.js_data or visitor_id endpoint.
-    async fn mint_visitor(http: &reqwest::Client) -> YtmResult<String> {
-        // Try sw.js_data first
-        if let Ok(resp) = http
-            .get("https://music.youtube.com/sw.js_data")
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-        {
-            if let Ok(text) = resp.text().await {
-                // Strip first 5 chars (")]}'\n")
-                let trimmed = if text.len() > 5 { &text[5..] } else { &text };
-                // Try to find visitorData matching ^Cg[ts]
-                if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
-                    if let Some(vd) = Self::extract_visitor_data(&parsed) {
-                        if vd.starts_with("Cgt") || vd.starts_with("Cgs") {
-                            return Ok(vd);
+            if let Some(v) = visitor.filter(|v| !v.is_empty()) {
+                req = req.header("X-Goog-Visitor-Id", v);
+            }
+            let transient: String = match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.as_u16() == 429 {
+                        return Err(YtmError::RateLimited);
+                    }
+                    if status.is_server_error() {
+                        format!("HTTP {status} from {endpoint}")
+                    } else if !status.is_success() {
+                        return Err(YtmError::Network(format!("HTTP {status} from {endpoint}")));
+                    } else {
+                        match resp.json::<Value>().await {
+                            Ok(v) => return Ok(v),
+                            Err(e) if e.is_timeout() || e.is_body() => format!("{endpoint}: {e}"),
+                            Err(e) => return Err(YtmError::Parse(format!("{endpoint}: {e}"))),
                         }
                     }
                 }
-                // Also try raw regex-style matching on the text
-                for part in trimmed.split('"') {
-                    let p = part.trim();
-                    if (p.starts_with("Cgt") || p.starts_with("Cgs")) && p.len() > 10 {
-                        return Ok(p.to_string());
-                    }
-                }
+                Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => format!("{endpoint}: {e}"),
+                Err(e) => return Err(YtmError::Network(format!("{endpoint}: {e}"))),
+            };
+            if attempt >= RETRY_ATTEMPTS {
+                return Err(YtmError::Network(transient));
+            }
+            tokio::time::sleep(delay).await;
+            delay *= 2;
+        }
+    }
+
+    /// WEB_REMIX call on music.youtube.com with the web visitor data.
+    async fn remix(&self, endpoint: &str, extra: Value) -> YtmResult<Value> {
+        let visitor = self.visitor_data();
+        let mut body = json!({ "context": self.context(&clients::WEB_REMIX, Some(&visitor)) });
+        if let (Some(b), Some(e)) = (body.as_object_mut(), extra.as_object()) {
+            for (k, v) in e {
+                b.insert(k.clone(), v.clone());
             }
         }
+        let resp = self
+            .post_api(&clients::WEB_REMIX, endpoint, body, Some(&visitor), Duration::from_secs(20))
+            .await?;
+        // Adopt the visitor id YouTube assigns when we had none.
+        if visitor.is_empty()
+            && let Some(vd) = resp["responseContext"]["visitorData"].as_str()
+        {
+            self.set_visitor_data(vd);
+        }
+        Ok(resp)
+    }
 
-        // Fallback: POST to visitor_id endpoint
-        let body = json!({
-            "context": {
-                "client": {
-                    "clientName": "WEB_REMIX",
-                    "clientVersion": clients::WEB_REMIX_VERSION
-                }
-            }
-        });
-        let resp = http
-            .post(format!("{}/visitor_id", BASE_URL))
-            .header("Content-Type", "application/json")
-            .json(&body)
+    async fn browse(&self, browse_id: Option<&str>, params: Option<&str>, continuation: Option<&str>) -> YtmResult<Value> {
+        let mut extra = json!({});
+        if let Some(b) = browse_id {
+            extra["browseId"] = json!(b);
+        }
+        if let Some(p) = params {
+            extra["params"] = json!(p);
+        }
+        if let Some(c) = continuation {
+            extra["continuation"] = json!(c);
+        }
+        self.remix("browse", extra).await
+    }
+
+    async fn next_raw(&self, video_id: Option<&str>, playlist_id: Option<&str>, params: Option<&str>) -> YtmResult<Value> {
+        let mut extra = json!({ "isAudioOnly": true, "enablePersistentPlaylistPanel": true });
+        if let Some(v) = video_id {
+            extra["videoId"] = json!(v);
+        }
+        if let Some(p) = playlist_id {
+            extra["playlistId"] = json!(p);
+        }
+        if let Some(p) = params {
+            extra["params"] = json!(p);
+        }
+        self.remix("next", extra).await
+    }
+
+    /// Web visitor data from `sw.js_data` (strip `)]}'`, `[0][2]`, first
+    /// string matching `^Cg[ts]`), else minted via `visitor_id`.
+    async fn mint_visitor(&self) -> YtmResult<String> {
+        if let Ok(resp) = self
+            .http
+            .get("https://music.youtube.com/sw.js_data")
+            .header("User-Agent", clients::WEB_UA)
             .timeout(Duration::from_secs(10))
             .send()
             .await
-            .map_err(|e| YtmError::Network(format!("visitor_id: {e}")))?;
-
-        let json: Value = resp.json().await.map_err(|e| YtmError::Network(e.to_string()))?;
-        json["visitorData"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| YtmError::Parse("no visitorData in visitor_id response".into()))
-    }
-
-    /// Recursively search a JSON value for a string field named "visitorData".
-    fn extract_visitor_data(val: &Value) -> Option<String> {
-        match val {
-            Value::Object(map) => {
-                if let Some(Value::String(s)) = map.get("visitorData") {
-                    return Some(s.clone());
-                }
-                for v in map.values() {
-                    if let Some(found) = Self::extract_visitor_data(v) {
-                        return Some(found);
-                    }
-                }
-                None
-            }
-            Value::Array(arr) => {
-                for v in arr {
-                    if let Some(found) = Self::extract_visitor_data(v) {
-                        return Some(found);
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-
-    /// Validate a stream URL with a ranged GET.
-    /// For tokened URLs: probe last byte. For untokened: probe at UNTOKENED_WINDOW_PROBE_BYTE.
-    async fn validate_stream_url(&self, url: &str, content_length: Option<u64>) -> bool {
-        let is_untokened = !url.contains("&pot=") && !url.contains("?pot=");
-        let probe_byte = if is_untokened {
-            clients::UNTOKENED_WINDOW_PROBE_BYTE
-        } else {
-            content_length.unwrap_or(1).saturating_sub(1)
-        };
-
-        let range_header = format!("bytes={}-{}", probe_byte, probe_byte);
-        match self
-            .http
-            .get(url)
-            .header("Range", range_header)
-            .timeout(Duration::from_secs(8))
-            .send()
-            .await
+            && let Ok(text) = resp.text().await
+            && let Some(vd) = parse_sw_js_data(&text)
         {
-            Ok(resp) => resp.status().is_success() || resp.status().as_u16() == 206,
-            Err(_) => false,
+            return Ok(vd);
         }
+        self.mint_client_visitor(&clients::WEB_REMIX).await
+    }
+
+    /// `POST {apiOrigin}/youtubei/v1/visitor_id` as `client`.
+    async fn mint_client_visitor(&self, client: &ClientSpec) -> YtmResult<String> {
+        let body = json!({ "context": self.context(client, None) });
+        let resp = self.post_api(client, "visitor_id", body, None, Duration::from_secs(10)).await?;
+        resp["responseContext"]["visitorData"]
+            .as_str()
+            .or_else(|| resp["visitorData"].as_str())
+            .map(str::to_string)
+            .ok_or_else(|| YtmError::Parse("no visitorData in visitor_id response".into()))
     }
 }
 
+/// Parse `sw.js_data` → visitor data (Kotlin `YouTube.visitorData`).
+pub fn parse_sw_js_data(text: &str) -> Option<String> {
+    let body = text.get(5..)?;
+    let is_vd = |s: &str| s.starts_with("Cgt") || s.starts_with("Cgs");
+    if let Ok(v) = serde_json::from_str::<Value>(body)
+        && let Some(arr) = v[0][2].as_array()
+        && let Some(s) = arr.iter().filter_map(|x| x.as_str()).find(|s| is_vd(s))
+    {
+        return Some(s.to_string());
+    }
+    body.split('"').map(str::trim).find(|p| is_vd(p) && p.len() > 10).map(str::to_string)
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 impl YtmClient {
-    /// Build a client, fetching/minting visitor data (spec §2.1).
+    /// Build a client and fetch web visitor data (spec §2.1). Network
+    /// failures while fetching visitor data are not fatal: the client works
+    /// without it and adopts the one YouTube assigns on the first response.
     pub async fn new() -> YtmResult<Self> {
-        use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, USER_AGENT};
+        let client = Self::new_offline()?;
+        if let Ok(vd) = client.mint_visitor().await {
+            client.set_visitor_data(&vd);
+        }
+        Ok(client)
+    }
 
-        let mut default_headers = HeaderMap::new();
-        default_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        default_headers.insert(USER_AGENT, HeaderValue::from_static(clients::WEB_UA));
+    /// Build a client without any network access (no visitor data yet).
+    pub fn new_offline() -> YtmResult<Self> {
+        Ok(Self { http: Self::build_http()?, inner: Arc::new(Inner::default()) })
+    }
 
-        let http = reqwest::Client::builder()
-            .default_headers(default_headers)
-            .gzip(true)
-            .deflate(true)
-            .build()
-            .map_err(|e| YtmError::Network(format!("reqwest client build: {e}")))?;
+    /// Set content language/country, e.g. `("vi", "VN")`. Affects titles,
+    /// home feed and charts. Defaults to `("en", "US")`.
+    pub fn set_locale(&self, hl: impl Into<String>, gl: impl Into<String>) {
+        let mut loc = self.inner.locale.write().expect("locale lock");
+        loc.hl = hl.into();
+        loc.gl = gl.into().to_uppercase();
+    }
 
-        let visitor = Self::mint_visitor(&http).await?;
+    /// Current `(hl, gl)`.
+    pub fn locale_pair(&self) -> (String, String) {
+        let l = self.locale();
+        (l.hl, l.gl)
+    }
 
-        Ok(Self {
-            http,
-            visitor_data: RwLock::new(visitor),
-        })
+    /// Current web visitor data ("" when none) — persist it across runs.
+    pub fn visitor_data(&self) -> String {
+        self.inner.visitor_data.read().expect("visitor lock").clone()
+    }
+
+    /// Restore previously persisted web visitor data.
+    pub fn set_visitor_data(&self, vd: &str) {
+        *self.inner.visitor_data.write().expect("visitor lock") = vd.to_string();
     }
 
     /// Search across all filters at once (songs/videos/albums/artists/playlists).
     pub async fn search_all(&self, query: &str) -> YtmResult<SearchResults> {
-        let mut body = self.web_remix_context();
-        body["query"] = Value::String(query.to_string());
-        let json = self.post_innertube("search", body).await?;
+        let json = self.remix("search", json!({ "query": query })).await?;
         Ok(parse::search_response(&json))
     }
 
     /// Search with a single filter; returns songs for SONG/VIDEO filters.
     pub async fn search_songs(&self, query: &str, filter_params: &str) -> YtmResult<Vec<Song>> {
-        let mut body = self.web_remix_context();
-        body["query"] = Value::String(query.to_string());
-        body["params"] = Value::String(filter_params.to_string());
-        let json = self.post_innertube("search", body).await?;
+        let json = self.remix("search", json!({ "query": query, "params": filter_params })).await?;
         let results = parse::search_response(&json);
-        // For SONG/VIDEO filters the songs or videos list is what we want
         let mut songs = results.songs;
         songs.extend(results.videos);
         Ok(songs)
     }
 
+    /// Search with any filter, returning the full typed result set (albums,
+    /// artists, playlists filters included).
+    pub async fn search_filtered(&self, query: &str, filter_params: &str) -> YtmResult<SearchResults> {
+        let json = self.remix("search", json!({ "query": query, "params": filter_params })).await?;
+        Ok(parse::search_response(&json))
+    }
+
     /// `music/get_search_suggestions`.
     pub async fn suggestions(&self, query: &str) -> YtmResult<Vec<String>> {
-        let mut body = self.web_remix_context();
-        body["input"] = Value::String(query.to_string());
-        let json = self.post_innertube("music/get_search_suggestions", body).await?;
+        let json = self.remix("music/get_search_suggestions", json!({ "input": query })).await?;
+        Ok(parse::suggestions_response(&json))
+    }
 
-        let mut suggestions = Vec::new();
-        // Walk contents[].searchSuggestionsSectionRenderer.contents[].searchSuggestionRenderer.suggestion.runs[].text
-        if let Some(contents) = json["contents"].as_array() {
-            for section in contents {
-                if let Some(items) = section["searchSuggestionsSectionRenderer"]["contents"].as_array() {
-                    for item in items {
-                        let runs = &item["searchSuggestionRenderer"]["suggestion"]["runs"];
-                        if let Some(runs) = runs.as_array() {
-                            let text: String = runs.iter()
-                                .filter_map(|r| r["text"].as_str())
-                                .collect::<Vec<_>>()
-                                .join("");
-                            if !text.is_empty() {
-                                suggestions.push(text);
-                            }
-                        }
-                        // Also try navigationSuggestionRenderer
-                        let runs2 = &item["navigationSuggestionRenderer"]["suggestion"]["runs"];
-                        if let Some(runs) = runs2.as_array() {
-                            let text: String = runs.iter()
-                                .filter_map(|r| r["text"].as_str())
-                                .collect::<Vec<_>>()
-                                .join("");
-                            if !text.is_empty() {
-                                suggestions.push(text);
-                            }
-                        }
-                    }
-                }
+    /// Suggestions plus the recommended items (artists/songs) shown under them.
+    pub async fn suggestions_with_items(&self, query: &str) -> YtmResult<(Vec<String>, Vec<ShelfItem>)> {
+        let json = self.remix("music/get_search_suggestions", json!({ "input": query })).await?;
+        Ok((parse::suggestions_response(&json), parse::suggestion_items(&json)))
+    }
+
+    /// Browse an album (`MPRE…` id). Tracks inherit album artists/artwork.
+    pub async fn album(&self, browse_id: &str) -> YtmResult<(Album, Vec<Song>)> {
+        let json = self.browse(Some(browse_id), None, None).await?;
+        let (mut album, mut songs) = parse::album_response(&json);
+        if album.id.is_empty() {
+            album.id = browse_id.to_string();
+            for s in &mut songs {
+                s.album_id = Some(browse_id.to_string());
             }
         }
-        Ok(suggestions)
+        if album.title.is_empty() && songs.is_empty() {
+            return Err(YtmError::Parse(format!("album {browse_id}: unrecognised response")));
+        }
+        Ok((album, songs))
     }
 
-    /// Browse an album (`MPRE…` id).
-    pub async fn album(&self, browse_id: &str) -> YtmResult<(Album, Vec<Song>)> {
-        let mut body = self.web_remix_context();
-        body["browseId"] = Value::String(browse_id.to_string());
-        let json = self.post_innertube("browse", body).await?;
-        Ok(parse::album_response(&json))
-    }
-
-    /// Browse an artist (`LA…` id): top songs + albums (name in `Shelf`s).
+    /// Browse an artist (`UC…`/`LA…` id): top songs + albums (name in `Shelf`s).
     pub async fn artist(&self, browse_id: &str) -> YtmResult<(Artist, Vec<Shelf>)> {
-        let mut body = self.web_remix_context();
-        body["browseId"] = Value::String(browse_id.to_string());
-        let json = self.post_innertube("browse", body).await?;
-        Ok(parse::artist_response(&json))
+        let json = self.browse(Some(browse_id), None, None).await?;
+        let (mut artist, shelves) = parse::artist_response(&json);
+        if artist.id.is_empty() {
+            artist.id = browse_id.to_string();
+        }
+        if artist.name.is_empty() && shelves.is_empty() {
+            return Err(YtmError::Parse(format!("artist {browse_id}: unrecognised response")));
+        }
+        Ok((artist, shelves))
     }
 
-    /// Browse a playlist (`VL…` community or `PL…` local).
+    /// Browse a playlist. Accepts `VL…` browse ids or bare playlist ids
+    /// (`PL…`, `RDCLAK…`, `OLAK5…`). Follows continuations up to
+    /// [`clients::MAX_GET_QUEUE_SIZE`] tracks.
     pub async fn playlist(&self, browse_id: &str) -> YtmResult<(Playlist, Vec<Song>)> {
-        let mut body = self.web_remix_context();
-        // Playlists need VL prefix for browse if they start with PL
-        let bid = if browse_id.starts_with("PL") {
-            format!("VL{}", browse_id)
-        } else {
-            browse_id.to_string()
-        };
-        body["browseId"] = Value::String(bid);
-        let json = self.post_innertube("browse", body).await?;
-        Ok(parse::playlist_response(&json))
+        let bid = if browse_id.starts_with("VL") { browse_id.to_string() } else { format!("VL{browse_id}") };
+        let json = self.browse(Some(&bid), None, None).await?;
+        let (mut playlist, mut songs) = parse::playlist_response(&json);
+        if playlist.id.is_empty() {
+            playlist.id = parse::playlist_id_from_browse(&bid);
+            playlist.browse_id = Some(bid.clone());
+        }
+        if playlist.name.is_empty() && songs.is_empty() {
+            return Err(YtmError::Parse(format!("playlist {browse_id}: unrecognised response")));
+        }
+        let mut token = parse::playlist_continuation_token(&json);
+        while let Some(t) = token.take() {
+            if songs.len() >= clients::MAX_GET_QUEUE_SIZE {
+                break;
+            }
+            let page = self.browse(None, None, Some(&t)).await?;
+            let (more, next) = parse::playlist_continuation(&page);
+            let before = songs.len();
+            for s in more {
+                if !songs.iter().any(|x| x.id == s.id) {
+                    songs.push(s);
+                }
+            }
+            if songs.len() == before {
+                break;
+            }
+            token = next;
+        }
+        songs.truncate(clients::MAX_GET_QUEUE_SIZE);
+        Ok((playlist, songs))
     }
 
-    /// Home shelfs (spec §7.2 sources map to sections).
+    /// Home shelves (spec §7.2), following up to 3 continuation pages.
     pub async fn home(&self) -> YtmResult<Vec<Shelf>> {
-        let mut body = self.web_remix_context();
-        body["browseId"] = Value::String("FEmusic_home".to_string());
-        let json = self.post_innertube("browse", body).await?;
-
-        let mut shelves = Vec::new();
-        // Walk tabs[0].tabRenderer.content.sectionListRenderer.contents[]
-        let sections = &json["contents"]["singleColumnBrowseResultsRenderer"]["tabs"];
-        if let Some(tabs) = sections.as_array() {
-            if let Some(tab) = tabs.first() {
-                let contents = &tab["tabRenderer"]["content"]["sectionListRenderer"]["contents"];
-                if let Some(sections) = contents.as_array() {
-                    for section in sections {
-                        // musicCarouselShelfRenderer
-                        if let Some(shelf) = section.get("musicCarouselShelfRenderer") {
-                            let title = parse::nav_text(&shelf["header"]["musicCarouselShelfBasicHeaderRenderer"]["title"]);
-                            let mut items = Vec::new();
-                            if let Some(contents) = shelf["contents"].as_array() {
-                                for item in contents {
-                                    if let Some(two_row) = item.get("musicTwoRowItemRenderer") {
-                                        if let Some(shelf_item) = parse::two_row_to_shelf_item(two_row) {
-                                            items.push(shelf_item);
-                                        }
-                                    }
-                                    if let Some(list_item) = item.get("musicResponsiveListItemRenderer") {
-                                        if let Some(song) = parse::list_item_to_song(&Value::Object(
-                                            std::iter::once(("musicResponsiveListItemRenderer".to_string(), list_item.clone())).collect(),
-                                        )) {
-                                            items.push(mochy_core::models::ShelfItem::Song(song));
-                                        }
-                                    }
-                                }
-                            }
-                            if !title.is_empty() || !items.is_empty() {
-                                shelves.push(Shelf { title, items });
-                            }
-                        }
-                        // musicShelfRenderer (list sections)
-                        if let Some(shelf) = section.get("musicShelfRenderer") {
-                            let title = parse::nav_text(&shelf["title"]);
-                            let mut items = Vec::new();
-                            if let Some(contents) = shelf["contents"].as_array() {
-                                for item in contents {
-                                    if let Some(song) = parse::list_item_to_song(item) {
-                                        items.push(mochy_core::models::ShelfItem::Song(song));
-                                    }
-                                }
-                            }
-                            if !title.is_empty() || !items.is_empty() {
-                                shelves.push(Shelf { title, items });
-                            }
-                        }
-                    }
+        let json = self.browse(Some("FEmusic_home"), None, None).await?;
+        let (mut shelves, mut cont) = parse::home_response(&json);
+        for _ in 0..3 {
+            let Some(c) = cont.take() else { break };
+            match self.browse(None, None, Some(&c)).await {
+                Ok(page) => {
+                    let (more, next) = parse::home_response(&page);
+                    shelves.extend(more);
+                    cont = next;
                 }
+                Err(_) => break,
             }
         }
         Ok(shelves)
     }
 
-    /// Related songs for a video (from `next`).
+    /// Related songs for a video: the `next` response's Related tab
+    /// (`MPTR…`), browsed. Audio tracks are preferred over videos.
     pub async fn related(&self, video_id: &str) -> YtmResult<Vec<Song>> {
-        let mut body = self.web_remix_context();
-        body["videoId"] = Value::String(video_id.to_string());
-        body["isAudioOnly"] = Value::Bool(true);
-        let json = self.post_innertube("next", body).await?;
+        let next = self.next_raw(Some(video_id), None, None).await?;
+        let Some(bid) = parse::next_related_browse_id(&next) else {
+            return Ok(Vec::new());
+        };
+        let json = self.browse(Some(&bid), None, None).await?;
+        Ok(parse::related_response(&json))
+    }
 
-        let mut songs = Vec::new();
-        // Walk contents.singleColumnMusicWatchNextResultsRenderer.tabbedRenderer.
-        //   watchNextTabbedResultsRenderer.tabs[].tabRenderer.content.musicQueueRenderer.content.
-        //   playlistPanelRenderer.contents[].playlistPanelVideoRenderer → related tracks
-        // Also try the related tab
-        let tabs = &json["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]
-            ["watchNextTabbedResultsRenderer"]["tabs"];
-        if let Some(tabs) = tabs.as_array() {
-            // Related is usually tab[2] (Up next, Lyrics, Related)
-            for tab in tabs {
-                let section = &tab["tabRenderer"]["content"]["musicQueueRenderer"]["content"]
-                    ["playlistPanelRenderer"]["contents"];
-                if let Some(items) = section.as_array() {
-                    for item in items {
-                        if let Some(renderer) = item.get("playlistPanelVideoRenderer") {
-                            if let Some(song) = parse::panel_video_to_song(renderer) {
-                                songs.push(song);
-                            }
-                        }
-                    }
-                }
-                // Also try sectionListRenderer for the related tab
-                let sections = &tab["tabRenderer"]["content"]["sectionListRenderer"]["contents"];
-                if let Some(secs) = sections.as_array() {
-                    for sec in secs {
-                        if let Some(shelf) = sec.get("musicShelfRenderer") {
-                            if let Some(contents) = shelf["contents"].as_array() {
-                                for item in contents {
-                                    if let Some(song) = parse::list_item_to_song(item) {
-                                        songs.push(song);
-                                    }
-                                }
-                            }
-                        }
-                        if let Some(shelf) = sec.get("musicCarouselShelfRenderer") {
-                            if let Some(contents) = shelf["contents"].as_array() {
-                                for item in contents {
-                                    if let Some(song) = parse::list_item_to_song(item) {
-                                        songs.push(song);
-                                    }
-                                }
-                            }
-                        }
-                    }
+    /// Autoplay/radio queue for a seed video (capped at 1000). Follows the
+    /// automix (`RDAMVM…`) endpoint like Kotlin `YouTube.next`.
+    pub async fn get_queue(&self, video_id: &str) -> YtmResult<Vec<QueueItem>> {
+        let first = self.next_raw(Some(video_id), None, None).await?;
+        let mut items = parse::queue_from_next(&first);
+        if let Some((pid, params)) = parse::next_automix_endpoint(&first)
+            && let Ok(mix) = self.next_raw(None, Some(&pid), params.as_deref()).await
+        {
+            for q in parse::queue_from_next(&mix) {
+                if !items.iter().any(|i| i.video_id == q.video_id) {
+                    items.push(q);
                 }
             }
         }
-        Ok(songs)
+        items.truncate(clients::MAX_GET_QUEUE_SIZE);
+        Ok(items)
     }
 
-    /// Autoplay/radio queue for a seed video (capped at 1000).
-    pub async fn get_queue(&self, video_id: &str) -> YtmResult<Vec<QueueItem>> {
-        let mut body = self.web_remix_context();
-        body["videoId"] = Value::String(video_id.to_string());
-        body["isAudioOnly"] = Value::Bool(true);
-        body["enablePersistentPlaylistPanel"] = Value::Bool(true);
-        let json = self.post_innertube("next", body).await?;
-
+    /// Queue for a playlist id (e.g. an album's `OLAK5…` or a `RDCLAK…` mix).
+    pub async fn playlist_queue(&self, playlist_id: &str) -> YtmResult<Vec<QueueItem>> {
+        let json = self.next_raw(None, Some(playlist_id), None).await?;
         let mut items = parse::queue_from_next(&json);
         items.truncate(clients::MAX_GET_QUEUE_SIZE);
         Ok(items)
     }
 
-    /// Resolve a validated, decodable stream for a video (client walk,
-    /// validation probe, AAC-first ranking — spec §2.4–§2.6).
-    pub async fn resolve_stream(
-        &self,
-        video_id: &str,
-        _quality: AudioQuality,
-    ) -> YtmResult<StreamResult> {
-        // --- 1. VISIONOS first (no PoToken, own visitor, apiOrigin www.youtube.com) ---
-        let visionos_visitor = Self::mint_visitor(&self.http)
-            .await
-            .unwrap_or_else(|_| String::new());
-
-        let mut visionos_body = self.visionos_context(&visionos_visitor);
-        visionos_body["videoId"] = Value::String(video_id.to_string());
-        visionos_body["contentCheckOk"] = Value::Bool(true);
-        visionos_body["racyCheckOk"] = Value::Bool(true);
-
-        let visionos_url = format!(
-            "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
-        );
-
-        if let Ok(resp) = self
-            .http
-            .post(&visionos_url)
-            .header("Content-Type", "application/json")
-            .header("X-YouTube-Client-Name", clients::VISIONOS_ID)
-            .header("X-YouTube-Client-Version", clients::VISIONOS_VERSION)
-            .json(&visionos_body)
-            .timeout(Duration::from_millis(clients::BACKEND_TIMEOUT_MS))
-            .send()
-            .await
-        {
-            if let Ok(player_json) = resp.json::<Value>().await {
-                // Check for premium-only
-                if let Some(status) = player_json["playabilityStatus"]["status"].as_str() {
-                    if status == "UNPLAYABLE" {
-                        if let Some(reason) = player_json["playabilityStatus"]["reason"].as_str() {
-                            if reason.contains("Premium") {
-                                return Err(YtmError::PremiumOnly(video_id.to_string()));
-                            }
-                        }
-                    }
-                }
-
-                if let Some(mut stream) = parse::pick_audio_format(&player_json) {
-                    // Validate the URL
-                    if self.validate_stream_url(&stream.url, stream.content_length).await {
-                        // Add required headers
-                        stream.headers.push((
-                            "User-Agent".to_string(),
-                            clients::WEB_UA.to_string(),
-                        ));
-                        return Ok(stream);
-                    }
-                }
-            }
-        }
-
-        // --- 2. WEB_REMIX fallback ---
-        let mut remix_body = self.web_remix_context();
-        remix_body["videoId"] = Value::String(video_id.to_string());
-        remix_body["contentCheckOk"] = Value::Bool(true);
-        remix_body["racyCheckOk"] = Value::Bool(true);
-
-        let player_json = self.post_innertube("player", remix_body).await?;
-
-        // Check for premium-only
-        if let Some(status) = player_json["playabilityStatus"]["status"].as_str() {
-            if status == "UNPLAYABLE" {
-                if let Some(reason) = player_json["playabilityStatus"]["reason"].as_str() {
-                    if reason.contains("Premium") {
-                        return Err(YtmError::PremiumOnly(video_id.to_string()));
-                    }
-                }
-            }
-        }
-
-        if let Some(mut stream) = parse::pick_audio_format(&player_json) {
-            if self.validate_stream_url(&stream.url, stream.content_length).await {
-                stream.headers.push((
-                    "User-Agent".to_string(),
-                    clients::WEB_UA.to_string(),
-                ));
-                return Ok(stream);
-            }
-        }
-
-        Err(YtmError::NoStream(video_id.to_string()))
+    /// YouTube Music's own (unsynced) lyrics text, when the track has any.
+    pub async fn lyrics(&self, video_id: &str) -> YtmResult<Option<String>> {
+        let next = self.next_raw(Some(video_id), None, None).await?;
+        let Some(bid) = parse::next_lyrics_browse_id(&next) else { return Ok(None) };
+        let json = self.browse(Some(&bid), None, None).await?;
+        Ok(parse::lyrics_response(&json))
     }
 
-    /// Track metadata for lyrics matching (title/artists/album/duration).
+    /// Resolve a validated, decodable stream for a video (client walk,
+    /// validation probe, AAC-first ranking — spec §2.4–§2.6).
+    pub async fn resolve_stream(&self, video_id: &str, quality: AudioQuality) -> YtmResult<StreamResult> {
+        self.resolve_stream_with(video_id, quality, CodecPreference::PreferAac).await
+    }
+
+    /// Track metadata for lyrics matching (title/artists/album/duration),
+    /// from the `next` panel (WEB_REMIX); falls back to the VISIONOS player's
+    /// `videoDetails` when the panel is empty.
     pub async fn track_meta(&self, video_id: &str) -> YtmResult<TrackMeta> {
-        let mut body = self.web_remix_context();
-        body["videoId"] = Value::String(video_id.to_string());
-        body["contentCheckOk"] = Value::Bool(true);
-        body["racyCheckOk"] = Value::Bool(true);
-
-        let json = self.post_innertube("player", body).await?;
-        let details = &json["videoDetails"];
-
-        let title = details["title"].as_str().unwrap_or("").to_string();
-        let author = details["author"].as_str().unwrap_or("").to_string();
-
-        let artists: Vec<String> = if author.is_empty() {
-            Vec::new()
-        } else {
-            // The author field may contain multiple artists separated by " - Topic"
-            // or comma-separated. Clean up " - Topic" suffix.
-            let cleaned = author.trim_end_matches(" - Topic");
-            cleaned
-                .split(", ")
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        };
-
-        let duration_secs = details["lengthSeconds"]
-            .as_str()
-            .and_then(|s| s.parse::<f64>().ok());
-
-        let album = json["microformat"]["microformatDataRenderer"]["pageOwnerDetails"]["name"]
-            .as_str()
-            .map(|s| s.to_string());
-
+        if let Ok(next) = self.next_raw(Some(video_id), None, None).await {
+            let songs = parse::songs_from_next(&next);
+            if let Some(song) = songs.iter().find(|s| s.id == video_id).or(songs.first()) {
+                let mut meta = TrackMeta::from(song);
+                meta.video_id = Some(video_id.to_string());
+                return Ok(meta);
+            }
+        }
+        let player = self.player(&clients::VISIONOS, video_id).await?;
+        let d = &player["videoDetails"];
+        let title = d["title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            return Err(YtmError::Parse(format!("no metadata for {video_id}")));
+        }
+        let author = d["author"].as_str().unwrap_or("").trim_end_matches(" - Topic").to_string();
         Ok(TrackMeta {
             title,
-            artists,
-            album,
-            duration_secs,
+            artists: if author.is_empty() { Vec::new() } else { vec![author] },
+            album: None,
+            duration_secs: d["lengthSeconds"].as_str().and_then(|s| s.parse().ok()),
             video_id: Some(video_id.to_string()),
         })
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pure parsing helpers — public so tests can pin response shapes without network.
-// ---------------------------------------------------------------------------
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync + Clone>() {}
+    assert_send_sync::<YtmClient>();
+};
 
-pub mod parse {
-    use mochy_core::models::{
-        Album, Artist, ArtistRef, Playlist, QueueItem, SearchResults, Shelf, ShelfItem, Song,
-    };
-    use serde_json::Value;
+#[cfg(test)]
+mod unit {
+    use super::*;
 
-    /// Extract text from a runs array or simpleText.
-    pub fn nav_text(val: &Value) -> String {
-        if let Some(s) = val["simpleText"].as_str() {
-            return s.to_string();
-        }
-        if let Some(runs) = val["runs"].as_array() {
-            return runs
-                .iter()
-                .filter_map(|r| r["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("");
-        }
-        String::new()
+    #[test]
+    fn clones_share_state_and_locale_applies() {
+        let a = YtmClient::new_offline().unwrap();
+        let b = a.clone();
+        a.set_locale("vi", "vn");
+        a.set_visitor_data("CgtTRVNTSU9O");
+        assert_eq!(b.locale_pair(), ("vi".to_string(), "VN".to_string()));
+        assert_eq!(b.visitor_data(), "CgtTRVNTSU9O");
+        let ctx = b.context(&clients::WEB_REMIX, Some("CgtTRVNTSU9O"));
+        assert_eq!(ctx["client"]["hl"], "vi");
+        assert_eq!(ctx["client"]["gl"], "VN");
+        assert_eq!(ctx["client"]["clientName"], "WEB_REMIX");
+        assert_eq!(ctx["client"]["visitorData"], "CgtTRVNTSU9O");
+        assert!(ctx["client"]["utcOffsetMinutes"].is_null());
     }
 
-    /// Extract a thumbnail URL from a thumbnails array, preferring the largest.
-    fn thumbnail_url(thumbnails: &Value) -> Option<String> {
-        thumbnails["thumbnails"]
-            .as_array()
-            .and_then(|arr| arr.last())
-            .and_then(|t| t["url"].as_str())
-            .map(|s| {
-                if s.starts_with("//") {
-                    format!("https:{s}")
-                } else {
-                    s.to_string()
-                }
-            })
+    #[test]
+    fn visionos_context_matches_kotlin() {
+        let c = YtmClient::new_offline().unwrap();
+        let ctx = c.context(&clients::VISIONOS, None);
+        let cl = &ctx["client"];
+        assert_eq!(cl["clientName"], "VISIONOS");
+        assert_eq!(cl["clientVersion"], "1.04");
+        assert_eq!(cl["clientScreen"], "WATCH");
+        assert_eq!(cl["platform"], "MOBILE");
+        assert_eq!(cl["deviceModel"], "RealityDevice17,1");
+        assert_eq!(cl["utcOffsetMinutes"], 0);
+        assert!(cl["visitorData"].is_null());
+        assert_eq!(ctx["user"]["lockedSafetyMode"], false);
+        assert!(clients::VISIONOS.is_native_app());
+        assert_eq!(clients::VISIONOS.api_origin, "https://www.youtube.com");
+        let h = clients::VISIONOS.stream_headers();
+        assert!(h.iter().any(|(k, v)| k == "Origin" && v == "https://www.youtube.com"));
+        assert!(h.iter().any(|(k, v)| k == "User-Agent" && v.starts_with("com.google.visionos.youtube/1.04")));
     }
 
-    /// Parse a duration string like "3:45" or "1:02:30" into seconds.
-    fn parse_duration(text: &str) -> Option<f64> {
-        let parts: Vec<&str> = text.trim().split(':').collect();
-        match parts.len() {
-            2 => {
-                let mins: f64 = parts[0].parse().ok()?;
-                let secs: f64 = parts[1].parse().ok()?;
-                Some(mins * 60.0 + secs)
-            }
-            3 => {
-                let hours: f64 = parts[0].parse().ok()?;
-                let mins: f64 = parts[1].parse().ok()?;
-                let secs: f64 = parts[2].parse().ok()?;
-                Some(hours * 3600.0 + mins * 60.0 + secs)
-            }
-            _ => None,
-        }
-    }
-
-    /// Extract videoId from a navigationEndpoint.
-    fn nav_video_id(nav: &Value) -> Option<String> {
-        nav["watchEndpoint"]["videoId"]
-            .as_str()
-            .or_else(|| nav["navigationEndpoint"]["watchEndpoint"]["videoId"].as_str())
-            .map(|s| s.to_string())
-    }
-
-    /// Extract browseId from a navigationEndpoint.
-    fn nav_browse_id(nav: &Value) -> Option<String> {
-        nav["browseEndpoint"]["browseId"]
-            .as_str()
-            .or_else(|| nav["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str())
-            .map(|s| s.to_string())
-    }
-
-    /// Extract tracks from a list of `musicResponsiveListItemRenderer`s.
-    pub fn list_item_to_song(r: &Value) -> Option<Song> {
-        let renderer = r
-            .get("musicResponsiveListItemRenderer")
-            .unwrap_or(r);
-
-        // Extract videoId from overlay or flexColumns endpoint
-        let video_id = renderer["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]
-            ["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]["videoId"]
-            .as_str()
-            .map(|s| s.to_string())
-            .or_else(|| {
-                // Try from flexColumns
-                let cols = renderer["flexColumns"].as_array()?;
-                for col in cols {
-                    let runs = col["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"]
-                        .as_array()?;
-                    for run in runs {
-                        if let Some(vid) = run["navigationEndpoint"]["watchEndpoint"]["videoId"].as_str() {
-                            return Some(vid.to_string());
-                        }
-                    }
-                }
-                None
-            })
-            .or_else(|| {
-                renderer["navigationEndpoint"]["watchEndpoint"]["videoId"]
-                    .as_str()
-                    .map(|s| s.to_string())
-            });
-
-        let video_id = video_id?;
-
-        let columns = renderer["flexColumns"].as_array();
-
-        // Column 0 = title
-        let title = columns
-            .as_ref()
-            .and_then(|cols| cols.first())
-            .map(|col| {
-                nav_text(
-                    &col["musicResponsiveListItemFlexColumnRenderer"]["text"],
-                )
-            })
-            .unwrap_or_default();
-
-        if title.is_empty() {
-            return None;
-        }
-
-        // Column 1 = artist(s) · album · duration (or artist · duration)
-        let mut artists = Vec::new();
-        let mut album_name = None;
-        let mut album_id = None;
-        let mut duration = None;
-
-        if let Some(cols) = columns.as_ref() {
-            if let Some(col1) = cols.get(1) {
-                let runs = &col1["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"];
-                if let Some(runs) = runs.as_array() {
-                    for run in runs {
-                        let text = run["text"].as_str().unwrap_or("");
-                        // Skip separators
-                        if text == " • " || text == " & " || text == ", " || text == " · " {
-                            continue;
-                        }
-                        // Check if this run has a browse endpoint
-                        if let Some(browse_id) = run["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str() {
-                            if browse_id.starts_with("UC") || browse_id.starts_with("LA") {
-                                // Artist
-                                artists.push(ArtistRef::with_id(browse_id, text));
-                            } else if browse_id.starts_with("MPRE") {
-                                // Album
-                                album_name = Some(text.to_string());
-                                album_id = Some(browse_id.to_string());
-                            } else {
-                                artists.push(ArtistRef::with_id(browse_id, text));
-                            }
-                        } else if parse_duration(text).is_some() {
-                            duration = parse_duration(text);
-                        } else if !text.is_empty() && text != "Song" && text != "Video" {
-                            // Likely an artist without a browse id
-                            artists.push(ArtistRef::new(text));
-                        }
-                    }
-                }
-            }
-        }
-
-        let thumbnail = thumbnail_url(&renderer["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]);
-        let explicit = renderer["badges"].as_array().map_or(false, |badges| {
-            badges.iter().any(|b| {
-                b["musicInlineBadgeRenderer"]["icon"]["iconType"].as_str() == Some("MUSIC_EXPLICIT_BADGE")
-            })
-        });
-
-        Some(Song {
-            id: video_id.clone(),
-            video_id: Some(video_id),
-            title,
-            artists,
-            album_id,
-            album_name,
-            duration_secs: duration,
-            thumbnail_url: thumbnail,
-            explicit,
-            ..Default::default()
-        })
-    }
-
-    /// Parse a `musicTwoRowItemRenderer` into a ShelfItem.
-    pub fn two_row_to_shelf_item(r: &Value) -> Option<ShelfItem> {
-        let title = nav_text(&r["title"]);
-        let subtitle = nav_text(&r["subtitle"]);
-        let thumb = thumbnail_url(&r["thumbnailRenderer"]["musicThumbnailRenderer"]["thumbnail"]);
-
-        // Determine type from the browse endpoint
-        let nav = &r["navigationEndpoint"];
-
-        if let Some(vid) = nav["watchEndpoint"]["videoId"].as_str() {
-            // Song/video
-            return Some(ShelfItem::Song(Song {
-                id: vid.to_string(),
-                video_id: Some(vid.to_string()),
-                title,
-                artists: vec![ArtistRef::new(subtitle)],
-                thumbnail_url: thumb,
-                ..Default::default()
-            }));
-        }
-
-        if let Some(browse_id) = nav["browseEndpoint"]["browseId"].as_str() {
-            if browse_id.starts_with("MPRE") {
-                return Some(ShelfItem::Album(Album {
-                    id: browse_id.to_string(),
-                    title,
-                    thumbnail_url: thumb,
-                    ..Default::default()
-                }));
-            }
-            if browse_id.starts_with("UC") || browse_id.starts_with("LA") {
-                return Some(ShelfItem::Artist(Artist {
-                    id: browse_id.to_string(),
-                    name: title,
-                    thumbnail_url: thumb,
-                    channel_id: Some(browse_id.to_string()),
-                }));
-            }
-            if browse_id.starts_with("VL") || browse_id.starts_with("PL") || browse_id.starts_with("RDCLAK") {
-                return Some(ShelfItem::Playlist(Playlist {
-                    id: browse_id.to_string(),
-                    name: title,
-                    thumbnail_url: thumb,
-                    ..Default::default()
-                }));
-            }
-            // Fallback: treat as playlist
-            return Some(ShelfItem::Playlist(Playlist {
-                id: browse_id.to_string(),
-                name: title,
-                thumbnail_url: thumb,
-                ..Default::default()
-            }));
-        }
-
-        None
-    }
-
-    /// Convert a playlistPanelVideoRenderer to a Song.
-    pub fn panel_video_to_song(r: &Value) -> Option<Song> {
-        let video_id = r["navigationEndpoint"]["watchEndpoint"]["videoId"]
-            .as_str()
-            .or_else(|| r["videoId"].as_str())?
-            .to_string();
-
-        let title = nav_text(&r["title"]);
-        if title.is_empty() {
-            return None;
-        }
-
-        let mut artists = Vec::new();
-        if let Some(runs) = r["longBylineText"]["runs"].as_array()
-            .or_else(|| r["shortBylineText"]["runs"].as_array())
-        {
-            for run in runs {
-                let text = run["text"].as_str().unwrap_or("");
-                if text == " • " || text == " & " || text == ", " || text == " · " {
-                    continue;
-                }
-                if let Some(browse_id) = run["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str() {
-                    artists.push(ArtistRef::with_id(browse_id, text));
-                } else if !text.is_empty() {
-                    artists.push(ArtistRef::new(text));
-                }
-            }
-        }
-
-        let duration = r["lengthText"]["runs"]
-            .as_array()
-            .and_then(|runs| runs.first())
-            .and_then(|run| run["text"].as_str())
-            .and_then(parse_duration)
-            .or_else(|| {
-                r["lengthText"]["simpleText"]
-                    .as_str()
-                    .and_then(parse_duration)
-            });
-
-        let thumbnail = thumbnail_url(&r["thumbnail"]);
-
-        Some(Song {
-            id: video_id.clone(),
-            video_id: Some(video_id),
-            title,
-            artists,
-            duration_secs: duration,
-            thumbnail_url: thumbnail,
-            ..Default::default()
-        })
-    }
-
-    /// Parse a search response filtered by one filter params value.
-    pub fn search_response(json: &Value) -> SearchResults {
-        let mut results = SearchResults::default();
-
-        // Try tabbedSearchResultsRenderer first
-        let tab_contents = &json["contents"]["tabbedSearchResultsRenderer"]["tabs"];
-        let section_list = if let Some(tabs) = tab_contents.as_array() {
-            tabs.first()
-                .and_then(|t| t["tabRenderer"]["content"]["sectionListRenderer"]["contents"].as_array())
-        } else {
-            // Try direct sectionListRenderer
-            json["contents"]["sectionListRenderer"]["contents"].as_array()
-        };
-
-        if let Some(sections) = section_list {
-            for section in sections {
-                // musicShelfRenderer
-                if let Some(shelf) = section.get("musicShelfRenderer") {
-                    let shelf_title = nav_text(&shelf["title"]).to_lowercase();
-                    if let Some(contents) = shelf["contents"].as_array() {
-                        for item in contents {
-                            if shelf_title.contains("artist") {
-                                // Parse as artist
-                                if let Some(artist) = list_item_to_artist(item) {
-                                    results.artists.push(artist);
-                                }
-                            } else if shelf_title.contains("album") {
-                                if let Some(album) = list_item_to_album(item) {
-                                    results.albums.push(album);
-                                }
-                            } else if shelf_title.contains("playlist") || shelf_title.contains("community") || shelf_title.contains("featured") {
-                                if let Some(playlist) = list_item_to_playlist(item) {
-                                    results.playlists.push(playlist);
-                                }
-                            } else if shelf_title.contains("video") {
-                                if let Some(song) = list_item_to_song(item) {
-                                    results.videos.push(song);
-                                }
-                            } else {
-                                // Default: songs (or top result)
-                                if let Some(song) = list_item_to_song(item) {
-                                    results.songs.push(song);
-                                }
-                            }
-                        }
-                    }
-                }
-                // musicCardShelfRenderer (top result)
-                if let Some(card) = section.get("musicCardShelfRenderer") {
-                    let video_id = card["onTap"]["watchEndpoint"]["videoId"]
-                        .as_str()
-                        .map(|s| s.to_string());
-                    if let Some(vid) = video_id {
-                        let title = nav_text(&card["title"]);
-                        let subtitle = nav_text(&card["subtitle"]);
-                        results.songs.push(Song {
-                            id: vid.clone(),
-                            video_id: Some(vid),
-                            title,
-                            artists: vec![ArtistRef::new(subtitle)],
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Parse a list item as an Artist.
-    fn list_item_to_artist(r: &Value) -> Option<Artist> {
-        let renderer = r
-            .get("musicResponsiveListItemRenderer")
-            .unwrap_or(r);
-
-        let browse_id = nav_browse_id(&renderer["navigationEndpoint"])?;
-        let columns = renderer["flexColumns"].as_array()?;
-        let name = columns.first().map(|col| {
-            nav_text(&col["musicResponsiveListItemFlexColumnRenderer"]["text"])
-        }).unwrap_or_default();
-
-        if name.is_empty() {
-            return None;
-        }
-
-        let thumbnail = thumbnail_url(&renderer["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]);
-
-        Some(Artist {
-            id: browse_id.clone(),
-            name,
-            thumbnail_url: thumbnail,
-            channel_id: Some(browse_id),
-        })
-    }
-
-    /// Parse a list item as an Album.
-    fn list_item_to_album(r: &Value) -> Option<Album> {
-        let renderer = r
-            .get("musicResponsiveListItemRenderer")
-            .unwrap_or(r);
-
-        let browse_id = nav_browse_id(&renderer["navigationEndpoint"])?;
-        let columns = renderer["flexColumns"].as_array()?;
-        let title = columns.first().map(|col| {
-            nav_text(&col["musicResponsiveListItemFlexColumnRenderer"]["text"])
-        }).unwrap_or_default();
-
-        if title.is_empty() {
-            return None;
-        }
-
-        let thumbnail = thumbnail_url(&renderer["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]);
-
-        // Try to extract year from second column
-        let year = columns.get(1).and_then(|col| {
-            let text = nav_text(&col["musicResponsiveListItemFlexColumnRenderer"]["text"]);
-            // Look for a 4-digit year
-            text.split(|c: char| !c.is_ascii_digit())
-                .find(|s| s.len() == 4)
-                .and_then(|s| s.parse::<i32>().ok())
-        });
-
-        Some(Album {
-            id: browse_id,
-            title,
-            thumbnail_url: thumbnail,
-            year,
-            ..Default::default()
-        })
-    }
-
-    /// Parse a list item as a Playlist.
-    fn list_item_to_playlist(r: &Value) -> Option<Playlist> {
-        let renderer = r
-            .get("musicResponsiveListItemRenderer")
-            .unwrap_or(r);
-
-        let browse_id = nav_browse_id(&renderer["navigationEndpoint"])?;
-        let columns = renderer["flexColumns"].as_array()?;
-        let name = columns.first().map(|col| {
-            nav_text(&col["musicResponsiveListItemFlexColumnRenderer"]["text"])
-        }).unwrap_or_default();
-
-        if name.is_empty() {
-            return None;
-        }
-
-        let thumbnail = thumbnail_url(&renderer["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]);
-
-        Some(Playlist {
-            id: browse_id,
-            name,
-            thumbnail_url: thumbnail,
-            ..Default::default()
-        })
-    }
-
-    /// Parse an album browse response.
-    pub fn album_response(json: &Value) -> (Album, Vec<Song>) {
-        let header = &json["header"]["musicImmersiveHeaderRenderer"];
-        let header_alt = &json["header"]["musicDetailHeaderRenderer"];
-        let header_v2 = if header["title"].is_null() { header_alt } else { header };
-
-        let title = nav_text(&header_v2["title"]);
-        let thumbnail = thumbnail_url(
-            &header_v2["thumbnail"]["musicThumbnailRenderer"]["thumbnail"],
-        )
-        .or_else(|| {
-            thumbnail_url(&json["background"]["musicThumbnailRenderer"]["thumbnail"])
-        });
-
-        // Extract artists from straplineTextOne
-        let mut year = None;
-        let description = header_v2["description"]["musicDescriptionShelfRenderer"]["description"]
-            .as_str()
-            .or_else(|| json["header"]["musicDetailHeaderRenderer"]["description"]["runs"].as_array()
-                .and_then(|runs| runs.first())
-                .and_then(|r| r["text"].as_str()))
-            .map(|s| s.to_string());
-
-        // Try to extract year from subtitle
-        if let Some(runs) = header_v2["subtitle"]["runs"].as_array() {
-            for run in runs {
-                if let Some(text) = run["text"].as_str() {
-                    if text.len() == 4 {
-                        if let Ok(y) = text.parse::<i32>() {
-                            year = Some(y);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Browse id from the response
-        let browse_id = json["responseContext"]["serviceTrackingParams"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|p| p["params"].as_array())
-            .and_then(|params| {
-                params.iter().find_map(|p| {
-                    if p["key"].as_str() == Some("browse_id") {
-                        p["value"].as_str().map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unwrap_or_default();
-
-        let album = Album {
-            id: browse_id,
-            title,
-            thumbnail_url: thumbnail,
-            year,
-            description,
-            ..Default::default()
-        };
-
-        // Songs from musicShelfRenderer contents
-        let mut songs = Vec::new();
-        let tab_contents = &json["contents"]["singleColumnBrowseResultsRenderer"]["tabs"];
-        if let Some(tabs) = tab_contents.as_array() {
-            if let Some(tab) = tabs.first() {
-                let sections = &tab["tabRenderer"]["content"]["sectionListRenderer"]["contents"];
-                if let Some(sections) = sections.as_array() {
-                    for section in sections {
-                        if let Some(shelf) = section.get("musicShelfRenderer") {
-                            if let Some(contents) = shelf["contents"].as_array() {
-                                for (idx, item) in contents.iter().enumerate() {
-                                    if let Some(mut song) = list_item_to_song(item) {
-                                        song.album_id = Some(album.id.clone());
-                                        song.album_name = Some(album.title.clone());
-                                        // Set track index if not present
-                                        let _ = idx;
-                                        songs.push(song);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        (album, songs)
-    }
-
-    /// Parse an artist browse response.
-    pub fn artist_response(json: &Value) -> (Artist, Vec<Shelf>) {
-        let header = &json["header"]["musicImmersiveHeaderRenderer"];
-        let header_alt = &json["header"]["musicVisualHeaderRenderer"];
-        let header_v2 = if header["title"].is_null() { header_alt } else { header };
-
-        let name = nav_text(&header_v2["title"]);
-        let thumbnail = thumbnail_url(
-            &header_v2["thumbnail"]["musicThumbnailRenderer"]["thumbnail"],
-        );
-        let channel_id = header_v2["subscriptionButton"]["subscribeButtonRenderer"]["channelId"]
-            .as_str()
-            .map(|s| s.to_string());
-
-        let browse_id = json["responseContext"]["serviceTrackingParams"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|p| p["params"].as_array())
-            .and_then(|params| {
-                params.iter().find_map(|p| {
-                    if p["key"].as_str() == Some("browse_id") {
-                        p["value"].as_str().map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unwrap_or_default();
-
-        let artist = Artist {
-            id: browse_id,
-            name,
-            thumbnail_url: thumbnail,
-            channel_id,
-        };
-
-        // Shelves from sectionListRenderer
-        let mut shelves = Vec::new();
-        let tab_contents = &json["contents"]["singleColumnBrowseResultsRenderer"]["tabs"];
-        if let Some(tabs) = tab_contents.as_array() {
-            if let Some(tab) = tabs.first() {
-                let sections = &tab["tabRenderer"]["content"]["sectionListRenderer"]["contents"];
-                if let Some(sections) = sections.as_array() {
-                    for section in sections {
-                        // musicShelfRenderer (e.g. Songs, Albums)
-                        if let Some(shelf) = section.get("musicShelfRenderer") {
-                            let shelf_title = nav_text(&shelf["title"]);
-                            let mut items = Vec::new();
-                            if let Some(contents) = shelf["contents"].as_array() {
-                                for item in contents {
-                                    if let Some(song) = list_item_to_song(item) {
-                                        items.push(ShelfItem::Song(song));
-                                    }
-                                }
-                            }
-                            shelves.push(Shelf {
-                                title: shelf_title,
-                                items,
-                            });
-                        }
-                        // musicCarouselShelfRenderer
-                        if let Some(shelf) = section.get("musicCarouselShelfRenderer") {
-                            let shelf_title = nav_text(
-                                &shelf["header"]["musicCarouselShelfBasicHeaderRenderer"]["title"],
-                            );
-                            let mut items = Vec::new();
-                            if let Some(contents) = shelf["contents"].as_array() {
-                                for item in contents {
-                                    if let Some(two_row) = item.get("musicTwoRowItemRenderer") {
-                                        if let Some(shelf_item) = two_row_to_shelf_item(two_row) {
-                                            items.push(shelf_item);
-                                        }
-                                    }
-                                    if let Some(_list_item) =
-                                        item.get("musicResponsiveListItemRenderer")
-                                    {
-                                        if let Some(song) = list_item_to_song(item) {
-                                            items.push(ShelfItem::Song(song));
-                                        }
-                                    }
-                                }
-                            }
-                            shelves.push(Shelf {
-                                title: shelf_title,
-                                items,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        (artist, shelves)
-    }
-
-    /// Parse a playlist browse response.
-    pub fn playlist_response(json: &Value) -> (Playlist, Vec<Song>) {
-        let header = &json["header"]["musicDetailHeaderRenderer"];
-        let header_alt = &json["header"]["musicEditablePlaylistDetailHeaderRenderer"];
-        let header_v2 = if header["title"].is_null() {
-            &header_alt["header"]["musicDetailHeaderRenderer"]
-        } else {
-            header
-        };
-        // Also try immersive header
-        let header_v3 = &json["header"]["musicImmersiveHeaderRenderer"];
-        let use_header = if header_v2["title"].is_null() { header_v3 } else { header_v2 };
-
-        let name = nav_text(&use_header["title"]);
-        let thumbnail = thumbnail_url(
-            &use_header["thumbnail"]["musicThumbnailRenderer"]["thumbnail"],
-        )
-        .or_else(|| {
-            thumbnail_url(
-                &use_header["thumbnail"]["croppedSquareThumbnailRenderer"]["thumbnail"],
-            )
-        });
-
-        let description = use_header["description"]["runs"]
-            .as_array()
-            .and_then(|runs| runs.first())
-            .and_then(|r| r["text"].as_str())
-            .or_else(|| use_header["description"].as_str())
-            .map(|s| s.to_string());
-
-        // Song count from subtitle
-        let mut song_count = 0u32;
-        if let Some(runs) = use_header["subtitle"]["runs"].as_array() {
-            for run in runs {
-                if let Some(text) = run["text"].as_str() {
-                    // Try to find a number followed by "songs" or "tracks"
-                    let trimmed = text.replace(',', "");
-                    if let Ok(n) = trimmed.trim().parse::<u32>() {
-                        song_count = n;
-                    }
-                }
-            }
-        }
-
-        let browse_id = json["responseContext"]["serviceTrackingParams"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|p| p["params"].as_array())
-            .and_then(|params| {
-                params.iter().find_map(|p| {
-                    if p["key"].as_str() == Some("browse_id") {
-                        p["value"].as_str().map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unwrap_or_default();
-
-        let playlist = Playlist {
-            id: browse_id,
-            name,
-            thumbnail_url: thumbnail,
-            song_count,
-            description,
-            ..Default::default()
-        };
-
-        // Songs
-        let mut songs = Vec::new();
-        let tab_contents = &json["contents"]["singleColumnBrowseResultsRenderer"]["tabs"];
-        if let Some(tabs) = tab_contents.as_array() {
-            if let Some(tab) = tabs.first() {
-                let sections = &tab["tabRenderer"]["content"]["sectionListRenderer"]["contents"];
-                if let Some(sections) = sections.as_array() {
-                    for section in sections {
-                        if let Some(shelf) = section.get("musicShelfRenderer") {
-                            if let Some(contents) = shelf["contents"].as_array() {
-                                for item in contents {
-                                    if let Some(song) = list_item_to_song(item) {
-                                        songs.push(song);
-                                    }
-                                }
-                            }
-                        }
-                        // Also try musicPlaylistShelfRenderer
-                        if let Some(shelf) = section.get("musicPlaylistShelfRenderer") {
-                            if let Some(contents) = shelf["contents"].as_array() {
-                                for item in contents {
-                                    if let Some(song) = list_item_to_song(item) {
-                                        songs.push(song);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        (playlist, songs)
-    }
-
-    /// Parse `next` response into the radio/queue continuation list.
-    pub fn queue_from_next(json: &Value) -> Vec<QueueItem> {
-        let mut items = Vec::new();
-
-        // Walk contents.singleColumnMusicWatchNextResultsRenderer.tabbedRenderer.
-        //   watchNextTabbedResultsRenderer.tabs[0].tabRenderer.content.musicQueueRenderer.content.
-        //   playlistPanelRenderer.contents[]
-        let tabs = &json["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]
-            ["watchNextTabbedResultsRenderer"]["tabs"];
-
-        if let Some(tabs) = tabs.as_array() {
-            if let Some(tab) = tabs.first() {
-                let panel = &tab["tabRenderer"]["content"]["musicQueueRenderer"]["content"]
-                    ["playlistPanelRenderer"]["contents"];
-                if let Some(contents) = panel.as_array() {
-                    for item in contents {
-                        if let Some(renderer) = item.get("playlistPanelVideoRenderer") {
-                            if let Some(qi) = panel_video_to_queue_item(renderer) {
-                                items.push(qi);
-                            }
-                        }
-                    }
-                }
-                // Also try continuations in the autoplay panel
-                let autoplay = &tab["tabRenderer"]["content"]["musicQueueRenderer"]["content"]
-                    ["playlistPanelRenderer"]["continuations"];
-                if autoplay.is_array() {
-                    // Initial contents are already above; continuations would need
-                    // additional network calls which we don't do here.
-                }
-            }
-        }
-
-        items
-    }
-
-    /// Convert a playlistPanelVideoRenderer to a QueueItem.
-    fn panel_video_to_queue_item(r: &Value) -> Option<QueueItem> {
-        let video_id = r["navigationEndpoint"]["watchEndpoint"]["videoId"]
-            .as_str()
-            .or_else(|| r["videoId"].as_str())?
-            .to_string();
-
-        let title = nav_text(&r["title"]);
-
-        let playlist_id = r["navigationEndpoint"]["watchEndpoint"]["playlistId"]
-            .as_str()
-            .map(|s| s.to_string());
-
-        let set_video_id = r["playlistSetVideoId"]
-            .as_str()
-            .map(|s| s.to_string());
-
-        let mut artists = Vec::new();
-        if let Some(runs) = r["longBylineText"]["runs"]
-            .as_array()
-            .or_else(|| r["shortBylineText"]["runs"].as_array())
-        {
-            for run in runs {
-                let text = run["text"].as_str().unwrap_or("");
-                if text == " • " || text == " & " || text == ", " || text == " · " {
-                    continue;
-                }
-                if let Some(browse_id) =
-                    run["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str()
-                {
-                    artists.push(ArtistRef::with_id(browse_id, text));
-                } else if !text.is_empty() {
-                    artists.push(ArtistRef::new(text));
-                }
-            }
-        }
-
-        let duration = r["lengthText"]["runs"]
-            .as_array()
-            .and_then(|runs| runs.first())
-            .and_then(|run| run["text"].as_str())
-            .and_then(parse_duration)
-            .or_else(|| {
-                r["lengthText"]["simpleText"]
-                    .as_str()
-                    .and_then(parse_duration)
-            });
-
-        let thumbnail = thumbnail_url(&r["thumbnail"]);
-
-        Some(QueueItem {
-            video_id,
-            playlist_id,
-            set_video_id,
-            title,
-            artists,
-            duration_secs: duration,
-            thumbnail_url: thumbnail,
-        })
-    }
-
-    /// Pick the best playable `adaptiveFormats` entry per MVP ranking:
-    /// AAC-first (decodable), then bitrate/sample rate (spec §2.5 inverted).
-    pub fn pick_audio_format(player_json: &Value) -> Option<crate::StreamResult> {
-        let formats = player_json["streamingData"]["adaptiveFormats"].as_array()?;
-
-        let loudness_db = player_json["playerConfig"]["audioConfig"]["loudnessDb"]
-            .as_f64()
-            .or_else(|| {
-                player_json["playerConfig"]["audioConfig"]["perceptualLoudnessDb"].as_f64()
-            })
-            .map(|v| v as f32);
-
-        // Collect audio-only formats
-        let mut candidates: Vec<(crate::AudioFormat, u32, u32, u32, String, Option<u64>)> = Vec::new();
-
-        for fmt in formats {
-            let mime = fmt["mimeType"].as_str().unwrap_or("");
-            // Filter audio-only
-            if !mime.starts_with("audio/") {
-                continue;
-            }
-
-            let url = fmt["url"]
-                .as_str()
-                .or_else(|| fmt["signatureCipher"].as_str())
-                .unwrap_or("");
-            if url.is_empty() {
-                // signatureCipher URLs need deobfuscation — skip in MVP
-                if fmt["signatureCipher"].is_string() {
-                    continue;
-                }
-                continue;
-            }
-
-            let itag = fmt["itag"].as_u64().unwrap_or(0) as u32;
-            let bitrate = fmt["averageBitrate"]
-                .as_u64()
-                .or_else(|| fmt["bitrate"].as_u64())
-                .unwrap_or(0) as u32;
-            let sample_rate = fmt["audioSampleRate"]
-                .as_str()
-                .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(0);
-            let content_length = fmt["contentLength"]
-                .as_str()
-                .and_then(|s| s.parse::<u64>().ok());
-
-            let audio_format = if mime.contains("mp4a") || mime.contains("mp4") {
-                crate::AudioFormat::AacM4a
-            } else if mime.contains("opus") {
-                crate::AudioFormat::OpusWebm
-            } else if mime.contains("mp3") || mime.contains("mpeg") {
-                crate::AudioFormat::Mp3
-            } else if mime.contains("flac") {
-                crate::AudioFormat::Flac
-            } else {
-                crate::AudioFormat::Unknown
-            };
-
-            candidates.push((
-                audio_format,
-                itag,
-                bitrate,
-                sample_rate,
-                url.to_string(),
-                content_length,
-            ));
-        }
-
-        if candidates.is_empty() {
-            return None;
-        }
-
-        // Sort: decodable first (AAC > Mp3 > Flac > Opus > Unknown),
-        // then bitrate desc, then sample rate desc
-        candidates.sort_by(|a, b| {
-            let codec_rank = |f: crate::AudioFormat| -> u32 {
-                match f {
-                    crate::AudioFormat::AacM4a => 100,
-                    crate::AudioFormat::Mp3 => 90,
-                    crate::AudioFormat::Flac => 80,
-                    crate::AudioFormat::OpusWebm => 10,
-                    crate::AudioFormat::Unknown => 0,
-                }
-            };
-            codec_rank(b.0)
-                .cmp(&codec_rank(a.0))
-                .then(b.2.cmp(&a.2))
-                .then(b.3.cmp(&a.3))
-        });
-
-        let best = &candidates[0];
-        Some(crate::StreamResult {
-            url: best.4.clone(),
-            format: best.0,
-            itag: if best.1 > 0 { Some(best.1) } else { None },
-            bitrate_kbps: if best.2 > 0 {
-                Some(best.2 / 1000)
-            } else {
-                None
-            },
-            sample_rate_hz: if best.3 > 0 { Some(best.3) } else { None },
-            content_length: best.5,
-            loudness_db,
-            headers: Vec::new(),
-        })
+    #[test]
+    fn stream_walk_has_no_unusable_clients() {
+        assert_eq!(clients::STREAM_WALK[0], clients::VISIONOS);
+        assert!(clients::STREAM_WALK.iter().all(|c| !c.login_required && !c.use_web_po_tokens));
     }
 }
