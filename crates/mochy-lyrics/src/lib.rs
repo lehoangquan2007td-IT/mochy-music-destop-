@@ -5,12 +5,42 @@
 //! and the best is returned. MVP implements the network providers that don't
 //! require the InnerTube client: BetterLyrics, YouLyPlus, Paxsenix, LrcRed,
 //! SimpMusic, LrcLib, Deezer, NetEase, QQMusic, Kugou. The three
-//! YouTube-based providers are declared but skipped in MVP.
+//! YouTube-based providers are declared but skipped in MVP. Paxsenix is ported but
+//! disabled by default because its service is down (see [`ProviderId::implemented`]).
+//!
+//! `Lyrics::provider` is the provider's [`ProviderId::display_name`].
+//!
+//! Every provider produces a raw payload in the Mochy LRC dialect (exactly what Android
+//! stores in the `lyrics` table); [`fetch`] grades those payloads with
+//! [`select::pick_best`] and parses the winner with [`parse_lrc`].
 
 use std::time::Duration;
 
+use futures::future::join_all;
 use mochy_core::models::TrackMeta;
 use thiserror::Error;
+
+mod lrc;
+mod providers;
+pub mod script;
+pub mod select;
+mod ttml;
+mod xml;
+
+#[cfg(test)]
+mod tests;
+
+pub use script::Script;
+pub use select::{Candidate, pick_best};
+
+/// Sentinel stored in the `lyrics` table when no provider had lyrics (spec §3.5).
+pub const LYRICS_NOT_FOUND: &str = "LYRICS_NOT_FOUND";
+
+/// How early a line lights up before its own timestamp (Android `LineLeadInMs`).
+pub const LINE_LEAD_IN_MS: i64 = 300;
+
+/// Fallback duration of an untimed last line (Android `UntimedLineDurationMs`).
+pub const UNTIMED_LINE_DURATION_MS: i64 = 5_000;
 
 /// Lyric sync level (spec §3.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -111,9 +141,19 @@ impl ProviderId {
     }
 
     /// Parse a stored id string back to a variant.
+    ///
+    /// Accepts the [`id`](Self::id) strings, the Android provider names
+    /// (`"BetterLyrics"`, `"Kugou"`, … as saved in `lyricsProviderOrder`) and the display names,
+    /// case-insensitively.
     pub fn from_id(id: &str) -> Option<ProviderId> {
-        let _ = id;
-        todo!("ProviderId::from_id")
+        let id = id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        ProviderId::all()
+            .iter()
+            .copied()
+            .find(|p| p.id().eq_ignore_ascii_case(id) || p.display_name().eq_ignore_ascii_case(id))
     }
 
     /// Stable id string for persistence.
@@ -135,15 +175,21 @@ impl ProviderId {
         }
     }
 
-    /// True when MVP implements this provider.
+    /// True when this port implements the provider *and* it answered live when checked
+    /// (2026-11-16). The default [`FetchConfig`] only asks these; the others can still be
+    /// called through [`fetch_from_provider`] or an explicit `FetchConfig::order`.
     pub fn implemented(self) -> bool {
-        !matches!(
-            self,
+        match self {
+            // Need the InnerTube client (owned by mochy-innertube); not ported here.
             ProviderId::YouTubeSubtitle
-                | ProviderId::YouTubeMusic
-                | ProviderId::YouTubeCaptions
-                | ProviderId::LrcRed
-        )
+            | ProviderId::YouTubeMusic
+            | ProviderId::YouTubeCaptions => false,
+            // Ported (providers/paxsenix.rs), but lyrics.paxsenix.org is down: every request
+            // answered HTTP 502, or a Cloudflare "Attention Required" 403 challenge page, for
+            // all test songs on 2026-11-16. Re-enable once the service is back.
+            ProviderId::Paxsenix => false,
+            _ => true,
+        }
     }
 }
 
@@ -181,27 +227,120 @@ impl Default for FetchConfig {
     }
 }
 
+impl Lyrics {
+    /// Parse a stored / provider payload (Mochy LRC dialect, or plain text). `None` when it
+    /// holds no lyrics (blank, [`LYRICS_NOT_FOUND`], nothing parseable).
+    pub fn from_lrc(provider: impl Into<String>, raw: &str) -> Option<Lyrics> {
+        let (lines, sync) = parse_lrc(raw);
+        if sync == SyncKind::None || lines.is_empty() {
+            return None;
+        }
+        let plain = (sync == SyncKind::Plain).then(|| {
+            lines
+                .iter()
+                .map(|l| l.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        Some(Lyrics {
+            provider: provider.into(),
+            sync,
+            lines,
+            plain,
+        })
+    }
+
+    /// Serialize for the `lyrics` table. Untimed lyrics are written as plain text.
+    pub fn to_lrc(&self) -> String {
+        let untimed = self.sync == SyncKind::Plain
+            && self
+                .lines
+                .iter()
+                .all(|l| l.time == 0.0 && l.words.is_empty());
+        match (&self.plain, untimed) {
+            (Some(p), true) if !p.trim().is_empty() => p.clone(),
+            (_, true) => self
+                .lines
+                .iter()
+                .map(|l| l.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => lines_to_lrc(&self.lines),
+        }
+    }
+}
+
+/// Ask one provider with a timeout and grade its answer.
+async fn fetch_candidate(
+    q: &providers::Query,
+    provider: ProviderId,
+    order: usize,
+    timeout: Duration,
+    http: &reqwest::Client,
+) -> Option<Candidate> {
+    match tokio::time::timeout(timeout, providers::fetch_raw(provider, q, http)).await {
+        Ok(Ok(Some(raw))) => Candidate::new(provider, raw, order),
+        _ => None,
+    }
+}
+
 /// Fetch the best lyrics for a track. `None` when every provider misses.
 /// Queries eligible providers in parallel, scores results
 /// (Script 10000 / Sync 1000 / Duet 100, then order tiebreak — spec §3.3)
 /// and returns the winner.
-pub async fn fetch(
-    meta: &TrackMeta,
-    cfg: &FetchConfig,
-    http: &reqwest::Client,
-) -> Option<Lyrics> {
-    let _ = (meta, cfg, http);
-    todo!("lyrics::fetch")
+///
+/// Like Android, YouTube's auto captions are only asked when nothing else had lyrics.
+/// Providers in `cfg.order` that aren't ported (YouTube-based) simply return nothing.
+pub async fn fetch(meta: &TrackMeta, cfg: &FetchConfig, http: &reqwest::Client) -> Option<Lyrics> {
+    let q = providers::Query::from_meta(meta);
+    let mut order: Vec<ProviderId> = Vec::new();
+    for p in &cfg.order {
+        if !order.contains(p) {
+            order.push(*p);
+        }
+    }
+    type Indexed = Vec<(usize, ProviderId)>;
+    let (last_resort, regular): (Indexed, Indexed) = order
+        .iter()
+        .copied()
+        .enumerate()
+        .partition(|(_, p)| *p == ProviderId::YouTubeCaptions);
+    let ask = |set: Indexed| {
+        let q = &q;
+        join_all(
+            set.into_iter()
+                .map(move |(i, p)| fetch_candidate(q, p, i, cfg.timeout, http)),
+        )
+    };
+    let mut candidates: Vec<Candidate> = ask(regular).await.into_iter().flatten().collect();
+    let mut best = pick_best(meta, &candidates, order.len()).cloned();
+    if best.is_none() && !last_resort.is_empty() {
+        candidates.extend(ask(last_resort).await.into_iter().flatten());
+        best = pick_best(meta, &candidates, order.len()).cloned();
+    }
+    let best = best?;
+    Lyrics::from_lrc(best.provider.display_name(), &best.raw)
 }
 
 /// Fetch from a single provider (used by tests and the "pick provider" UI).
+/// `Ok(None)` when the provider has no lyrics for the track (or isn't ported).
 pub async fn fetch_from_provider(
     meta: &TrackMeta,
     provider: ProviderId,
     http: &reqwest::Client,
 ) -> LyricsResult<Option<Lyrics>> {
-    let _ = (meta, provider, http);
-    todo!("lyrics::fetch_from_provider")
+    let q = providers::Query::from_meta(meta);
+    let raw = providers::fetch_raw(provider, &q, http).await?;
+    Ok(raw.and_then(|r| Lyrics::from_lrc(provider.display_name(), &r)))
+}
+
+/// Raw payload (Mochy LRC dialect) from a single provider, ungraded — what Android stores.
+pub async fn fetch_raw_from_provider(
+    meta: &TrackMeta,
+    provider: ProviderId,
+    http: &reqwest::Client,
+) -> LyricsResult<Option<String>> {
+    providers::fetch_raw(provider, &providers::Query::from_meta(meta), http).await
 }
 
 // ---------------------------------------------------------------------------
@@ -211,31 +350,73 @@ pub async fn fetch_from_provider(
 /// Parse the Mochy LRC dialect: `[mm:ss.mmm]` lines, next-line word timings
 /// `<text:start:end>` (seconds), rich `<mm:ss.cc>word`, `{agent:X}`, `{bg}`.
 /// All lines sharing one timestamp ⇒ `SyncKind::Plain`.
+///
+/// Text with no timestamps at all is returned as `Plain` lines at 0 s; blank input or
+/// [`LYRICS_NOT_FOUND`] gives `(vec![], SyncKind::None)`. Lines are sorted by time; syllable
+/// pieces glued together in the text are merged into whole words (Android `fixWordSpacing`).
 pub fn parse_lrc(src: &str) -> (Vec<LyricLine>, SyncKind) {
-    let _ = src;
-    todo!("parse_lrc")
+    lrc::parse_lrc_impl(src)
 }
 
 /// Serialize lines back to the LRC dialect (for the `lyrics` DB table).
+///
+/// Format: `[mm:ss.mmm]{agent:X}{bg}text`, followed (for word-synced lines) by
+/// `<word:start:end|…>` in seconds. Round-trips with [`parse_lrc`].
 pub fn lines_to_lrc(lines: &[LyricLine]) -> String {
-    let _ = lines;
-    todo!("lines_to_lrc")
+    lrc::lines_to_lrc_impl(lines)
 }
 
 /// Parse TTML (Apple Music style, BetterLyrics/Paxsenix) into lines.
+///
+/// Background-vocal spans become separate `bg` lines placed right after their parent line.
 pub fn parse_ttml(xml: &str) -> LyricsResult<Vec<LyricLine>> {
-    let _ = xml;
-    todo!("parse_ttml")
+    ttml::parse_ttml_impl(xml)
+}
+
+fn ms(secs: f64) -> i64 {
+    (secs * 1000.0).round() as i64
 }
 
 /// Index of the line active at `t_secs` with the 300 ms lead-in
 /// (spec §3.4 `LineLeadInMs`); `offset_ms` shifts the query time
 /// (positive shows lines earlier — Android `song.lyricsOffset`).
-pub fn active_line_index(
-    lines: &[LyricLine],
-    t_secs: f64,
-    offset_ms: i32,
-) -> Option<usize> {
-    let _ = (lines, t_secs, offset_ms);
-    todo!("active_line_index")
+///
+/// `None` before the first line lights up. After the last line has ended this still returns
+/// the last index; use [`lyrics_end_secs`] to dim it during the outro (Android returns
+/// `lines.size` there).
+pub fn active_line_index(lines: &[LyricLine], t_secs: f64, offset_ms: i32) -> Option<usize> {
+    let last = lines.len().checked_sub(1)?;
+    let position = ms(t_secs) + offset_ms as i64;
+    match lines
+        .iter()
+        .position(|l| ms(l.time) >= position + LINE_LEAD_IN_MS)
+    {
+        Some(0) => None,
+        Some(i) => Some(i - 1),
+        None => Some(last),
+    }
+}
+
+/// When line `index` stops being sung (seconds): its last word's end when word-synced,
+/// otherwise the next line's start, otherwise its start + 5 s.
+pub fn line_end_secs(lines: &[LyricLine], index: usize) -> f64 {
+    let Some(line) = lines.get(index) else {
+        return 0.0;
+    };
+    if let Some(w) = line.words.last() {
+        return w.end;
+    }
+    if let Some(next) = lines.get(index + 1) {
+        return next.time;
+    }
+    line.time + UNTIMED_LINE_DURATION_MS as f64 / 1000.0
+}
+
+/// Where the lyrics as a whole finish (seconds); 0 for no lines.
+pub fn lyrics_end_secs(lines: &[LyricLine]) -> f64 {
+    lines
+        .len()
+        .checked_sub(1)
+        .map(|i| line_end_secs(lines, i))
+        .unwrap_or(0.0)
 }
