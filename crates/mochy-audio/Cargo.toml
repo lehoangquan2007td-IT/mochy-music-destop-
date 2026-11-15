@@ -1,13 +1,33 @@
 [package]
 name = "mochy-audio"
-description = "Audio playback engine with 10-band EQ, resampling and speed control"
+description = "Audio playback engine: symphonia decode, cpal output, Audio Lab DSP chain (EQ, limiter, reverb, spatial, loudness), speed/pitch"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-dirs = "7.0.0"
 mochy-core = { path = "../mochy-core" }
-rodio = "0.23.0"
-serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
+symphonia = { version = "0.5.5", default-features = false, features = [
+    "aac",
+    "adpcm",
+    "aiff",
+    "alac",
+    "caf",
+    "flac",
+    "isomp4",
+    "mkv",
+    "mp1",
+    "mp2",
+    "mp3",
+    "ogg",
+    "pcm",
+    "vorbis",
+    "wav",
+] }
+# Pure-Rust Opus (no FFI, zero deps): YouTube itag 251 (Opus in WebM), Ogg Opus.
+rusty-opus = "1.1.1"
+cpal = "0.18.2"
+rtrb = "0.3.6"
+realfft = "3.5"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
