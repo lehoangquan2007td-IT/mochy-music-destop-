@@ -134,7 +134,7 @@ pub enum ShelfItem {
 }
 
 /// A track inside a YTM queue (from `next`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QueueItem {
     pub video_id: String,
     pub playlist_id: Option<String>,
