@@ -1174,8 +1174,9 @@ impl MochyApp {
                         Route::Artist(id) => detail_ev = pages::detail::artist(ui, &mut cx, self.data.artists.get(id), &mut self.detail_arc),
                         Route::Playlist(id) => detail_ev = pages::detail::playlist(ui, &mut cx, self.data.playlists_remote.get(id), &mut self.detail_arc),
                         Route::AudioLab => {
-                            // TODO(after merge): feed the live spectrum:
-                            // self.audio_lab_view.set_spectrum(engine.spectrum());
+                            if let Some(e) = self.player.engine() {
+                                self.audio_lab_view.set_spectrum(e.spectrum());
+                            }
                             lab_changed = self.audio_lab_view.show(ui, &mut self.settings.audio_lab, cx.accent);
                             if self.player.is_playing() {
                                 ui.ctx().request_repaint_after(Duration::from_millis(33));
