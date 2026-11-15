@@ -1,0 +1,6 @@
+Inter (inter_regular.ttf, inter_medium.ttf, inter_semibold.ttf, inter_bold.ttf)
+Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+
+These fonts are licensed under the SIL Open Font License, Version 1.1.
+The full license text is available at https://openfontlicense.org/open-font-license-official-text/
+The files are copied unmodified from the Mochy Music Android app (app/src/main/res/font).
