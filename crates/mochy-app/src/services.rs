@@ -40,6 +40,8 @@ pub enum AppMsg {
     Toast(String),
     // ---- library/explore/stats ----
     Browse(crate::browse::BrowseMsg),
+    /// Tray icon click / menu pick, or a second launch asking to show the window.
+    Tray(crate::tray::TrayCmd),
 }
 
 pub enum LibraryMsg {

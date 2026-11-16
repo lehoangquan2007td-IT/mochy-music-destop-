@@ -34,7 +34,7 @@ const ICON_PNG: &[u8] = include_bytes!("../assets/icon/icon.png");
 const SETTINGS_DEBOUNCE: Duration = Duration::from_millis(400);
 const TOAST_SECS: f32 = 4.0;
 
-pub fn run(rt: tokio::runtime::Handle) -> eframe::Result {
+pub fn run(rt: tokio::runtime::Handle, instance: Option<crate::tray::Instance>) -> eframe::Result {
     let store = SettingsStore::open_default();
     let settings = match store.load() {
         Ok(s) => s,
@@ -60,7 +60,7 @@ pub fn run(rt: tokio::runtime::Handle) -> eframe::Result {
     eframe::run_native(
         "Mochy Music",
         options,
-        Box::new(move |cc| Ok(Box::new(MochyApp::new(cc, rt, store, settings)) as Box<dyn eframe::App>)),
+        Box::new(move |cc| Ok(Box::new(MochyApp::new(cc, rt, store, settings, instance)) as Box<dyn eframe::App>)),
     )
 }
 
@@ -129,10 +129,22 @@ pub struct MochyApp {
     integrations: crate::integrations::Integrations,
     /// Explore / browse / library parity / stats state.
     browse: crate::browse::BrowseState,
+    /// Notification-area icon (run in background).
+    tray: crate::tray::Tray,
+    /// Window hidden to the tray; the app keeps playing.
+    hidden_to_tray: bool,
+    /// Quit was chosen (tray menu): let the close go through.
+    quitting: bool,
 }
 
 impl MochyApp {
-    fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Handle, _store: SettingsStore, settings: AppSettings) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        rt: tokio::runtime::Handle,
+        _store: SettingsStore,
+        settings: AppSettings,
+        instance: Option<crate::tray::Instance>,
+    ) -> Self {
         let ctx = cc.egui_ctx.clone();
         let (bus, rx) = Bus::new();
         bus.set_ctx(ctx.clone());
@@ -187,6 +199,10 @@ impl MochyApp {
             player.request_restore();
         }
 
+        if let Some(i) = &instance {
+            i.listen(bus.clone());
+        }
+        let tray = crate::tray::Tray::new(bus.clone(), ICON_PNG);
         // Media keys (needs the native window handle on Windows).
         let hwnd = native_hwnd(cc);
         let media = match MediaKeys::new(bus.clone(), hwnd) {
@@ -249,6 +265,9 @@ impl MochyApp {
             started: Instant::now(),
             copy_request: None,
             integrations: crate::integrations::Integrations::new(svc.clone()),
+            tray,
+            hidden_to_tray: false,
+            quitting: false,
             shots: std::env::var_os("MOCHY_SHOTS").map(|d| ShotRunner { dir: d.into(), started: std::time::Instant::now(), step: 0, taken: false }),
             svc,
             browse: Default::default(),
@@ -512,6 +531,7 @@ impl MochyApp {
                 }
             },
             AppMsg::MediaKey(k) => self.on_media_key(ctx, k),
+            AppMsg::Tray(c) => self.on_tray(ctx, c),
             AppMsg::OutputDevices(d) => {
                 tracing::info!(count = d.len(), "output devices");
                 self.devices = Some(d);
@@ -548,7 +568,7 @@ impl MochyApp {
             MediaKey::Stop => self.player.pause(),
             MediaKey::SeekBy(d) => self.player.seek(self.player.pos + d),
             MediaKey::SetPosition(p) => self.player.seek(p),
-            MediaKey::Raise => ctx.send_viewport_cmd(egui::ViewportCommand::Focus),
+            MediaKey::Raise => self.show_window(ctx),
         }
     }
 
@@ -1361,6 +1381,7 @@ impl MochyApp {
 impl eframe::App for MochyApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump(ctx);
+        self.background_housekeeping(ctx);
         self.player.tick();
         self.track_change_housekeeping();
         self.media_housekeeping();
@@ -1572,6 +1593,56 @@ impl MochyApp {
                     }
                 }
                 Effect::Toast(t) => self.toast(t),
+            }
+        }
+    }
+}
+
+// ---- run in background (tray) ----
+impl MochyApp {
+    /// Close → hide to tray when background mode is on; keep the tray icon in sync.
+    fn background_housekeeping(&mut self, ctx: &egui::Context) {
+        let enabled = self.settings.misc.run_in_background;
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            if enabled && self.tray.is_active() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.hidden_to_tray = true;
+                self.np_open = false;
+                tracing::info!("window hidden to the notification area");
+            }
+        }
+        let now = self.player.current().map(|s| {
+            let artist = s.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ");
+            if artist.is_empty() { s.title.clone() } else { format!("{} · {}", s.title, artist) }
+        });
+        let playing = self.player.is_playing();
+        self.tray.sync(enabled, now, playing);
+        // Background mode switched off while hidden: bring the window back.
+        if !enabled && self.hidden_to_tray {
+            self.show_window(ctx);
+        }
+    }
+
+    fn show_window(&mut self, ctx: &egui::Context) {
+        self.hidden_to_tray = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
+    }
+
+    fn on_tray(&mut self, ctx: &egui::Context, cmd: crate::tray::TrayCmd) {
+        use crate::tray::TrayCmd;
+        match cmd {
+            TrayCmd::Show => self.show_window(ctx),
+            TrayCmd::Toggle => self.player.toggle(),
+            TrayCmd::Next => self.player.next(),
+            TrayCmd::Prev => self.player.prev(),
+            TrayCmd::Quit => {
+                self.quitting = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                ctx.request_repaint();
             }
         }
     }

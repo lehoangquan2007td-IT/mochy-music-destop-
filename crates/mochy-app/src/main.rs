@@ -28,10 +28,22 @@ mod services;
 mod smoke;
 mod songedit;
 mod stream_facts;
+mod tray;
 mod ui;
 mod widgets;
 
 fn main() {
+    // Single instance for the GUI (before logging, so a second launch doesn't
+    // touch the running app's log): it asks the running app to show itself.
+    let gui = !std::env::args().any(|a| a == "--smoke") && std::env::var_os("MOCHY_SHOTS").is_none();
+    let instance = if gui {
+        match tray::claim_single_instance() {
+            Some(i) => Some(i),
+            None => return,
+        }
+    } else {
+        None
+    };
     let log_path = logging::init();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), log = ?log_path, "Mochy Music starting");
 
@@ -65,7 +77,7 @@ fn main() {
         std::process::exit(code);
     }
 
-    if let Err(e) = app::run(rt.handle().clone()) {
+    if let Err(e) = app::run(rt.handle().clone(), instance) {
         tracing::error!("eframe error: {e}");
     }
     tracing::info!("Mochy Music exiting");

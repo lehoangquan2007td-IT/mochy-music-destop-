@@ -32,3 +32,7 @@ dirs = "7.0.0"
 lofty = "0.25.5"
 raw-window-handle = "0.6.2"
 souvlaki = "0.8"
+tray-icon = "0.26.1"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }

@@ -984,6 +984,12 @@ static VI: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
         ("Click to continue", "Bấm để tiếp tục"),
         ("Close", "Đóng"),
         ("Earlier", "Trước đó"),
+        // ---- run in background (tray) ----
+        ("Run in background", "Chạy ngầm"),
+        ("Closing the window keeps the music playing; Mochy stays in the notification area (tray). Click its icon to reopen, right-click for controls and Quit.", "Đóng cửa sổ thì nhạc vẫn phát; Mochy nằm ở khay hệ thống (notification area). Bấm vào biểu tượng để mở lại, chuột phải để điều khiển hoặc Thoát."),
+        ("Show Mochy", "Mở Mochy"),
+        ("Quit Mochy", "Thoát Mochy"),
+        ("Pause", "Tạm dừng"),
     ])
 });
 

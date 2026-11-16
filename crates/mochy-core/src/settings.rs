@@ -381,6 +381,9 @@ pub struct Misc {
     pub window_width: f32,
     pub window_height: f32,
     pub window_maximized: bool,
+    /// Closing the window keeps the app (and music) running in the
+    /// notification area; reopen it from the tray icon.
+    pub run_in_background: bool,
 }
 
 impl Default for Misc {
@@ -391,6 +394,7 @@ impl Default for Misc {
             window_width: 0.0,
             window_height: 0.0,
             window_maximized: false,
+            run_in_background: false,
         }
     }
 }
