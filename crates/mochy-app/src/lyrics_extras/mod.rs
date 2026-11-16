@@ -174,6 +174,10 @@ impl ExtrasEngine {
     /// Flip the session translation toggle (the toolbar's translate button).
     pub fn toggle_translation(&mut self) {
         self.translation_on = !self.translation_on;
+        if self.status == TranslateStatus::Failed {
+            // pressing again retries a failed translation
+            self.trans_have = None;
+        }
         if !self.translation_on {
             self.status = TranslateStatus::Idle;
         }
