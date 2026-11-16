@@ -32,8 +32,11 @@ pub enum LyricsState {
     Error(String),
 }
 
-/// Lines highlight this early (spec §3.4 `LineLeadInMs`).
-pub const LEAD_IN_SECS: f64 = 0.3;
+/// Lines highlight this early. 0 = a line lights up exactly when it is
+/// heard. The Android spec's 300 ms `LineLeadInMs` read ~0.3 s ahead of the
+/// device clock and users reported "lyrics run ahead of the music"; the
+/// per-song offset (±0.5 s buttons in Now Playing) does that job on demand.
+pub const LEAD_IN_SECS: f64 = 0.0;
 /// Gaps longer than this between sung words show the interlude dots.
 pub const MIN_INTERLUDE_SECS: f64 = 5.0;
 /// Manual scrolling pauses auto-follow this long.
@@ -41,8 +44,9 @@ const MANUAL_HOLD_SECS: f64 = 3.0;
 /// Active line anchor, as a fraction of the view height from the top.
 const ANCHOR: f32 = 0.33;
 
-/// Index of the line active at `pos_secs` (300 ms lead-in; positive
-/// `offset_ms` shows lines earlier). Lines must be sorted by time.
+/// Index of the line active at `pos_secs` (no lead-in — a line activates
+/// exactly when it is heard; positive `offset_ms` shows lines earlier).
+/// Lines must be sorted by time.
 pub fn active_line_index(lines: &[LyricLine], pos_secs: f64, offset_ms: i32) -> Option<usize> {
     let q = pos_secs + offset_ms as f64 / 1000.0 + LEAD_IN_SECS;
     lines.partition_point(|l| l.time <= q).checked_sub(1)
@@ -804,10 +808,10 @@ mod tests {
     fn active_line_lead_in_and_offset() {
         let lines = vec![line(1.0, "a"), line(5.0, "b"), line(9.0, "c")];
         assert_eq!(active_line_index(&lines, 0.0, 0), None);
-        assert_eq!(active_line_index(&lines, 0.69, 0), None);
-        assert_eq!(active_line_index(&lines, 0.71, 0), Some(0)); // 300 ms lead-in
-        assert_eq!(active_line_index(&lines, 4.69, 0), Some(0));
-        assert_eq!(active_line_index(&lines, 4.71, 0), Some(1));
+        assert_eq!(active_line_index(&lines, 0.99, 0), None);
+        assert_eq!(active_line_index(&lines, 1.01, 0), Some(0)); // activates exactly at its timestamp
+        assert_eq!(active_line_index(&lines, 4.99, 0), Some(0));
+        assert_eq!(active_line_index(&lines, 5.01, 0), Some(1));
         assert_eq!(active_line_index(&lines, 100.0, 0), Some(2));
         // Positive offset shows lines earlier.
         assert_eq!(active_line_index(&lines, 4.0, 1000), Some(1));
