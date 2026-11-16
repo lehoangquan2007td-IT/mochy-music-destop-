@@ -6,7 +6,7 @@
 
 ### ⬇️ TẢI BẢN MỚI NHẤT (.exe) — CHỈ 1 CLICK
 
-[![Download](https://img.shields.io/badge/⬇️_Tải_mochy--app.exe-v0.1.1-2ea44f?style=for-the-badge&logo=github)](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.1/mochy-music-desktop-v0.1.1-windows-x64.zip)
+[![Download](https://img.shields.io/badge/⬇️_Tải_mochy--app.exe-v0.1.2-2ea44f?style=for-the-badge&logo=github)](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.2/mochy-music-desktop-v0.1.2-windows-x64.zip)
 
 [![Latest release](https://img.shields.io/github/v/release/lehoangquan2007td-IT/mochy-music-destop-)](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest)
 [![License](https://img.shields.io/github/license/lehoangquan2007td-IT/mochy-music-destop-)](LICENSE)
@@ -17,14 +17,15 @@
 
 ## 📥 Hướng dẫn tải về nhanh (Windows 10/11 x64)
 
-1. Bấm nút **⬇️ Tải** ở trên (hoặc vào **[Releases](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest)**) → nhận file `mochy-music-desktop-v0.1.1-windows-x64.zip` (~11 MB).
-2. Giải nén → chạy **`mochy-app.exe`**. Không cần cài đặt, không cần runtime nào thêm.
-3. Xong! Dữ liệu app nằm trong `%LOCALAPPDATA%\MochyMusic`.
+1. Bấm nút **⬇️ Tải** ở trên (hoặc vào **[Releases](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest)**) → nhận file `mochy-music-desktop-v0.1.2-windows-x64.zip` (~11 MB).
+2. Giải nén → chạy **`mochy-app.exe`**. Không cần cài đặt, không cần runtime nào thêm (đóng bản đang chạy trước khi đè).
+3. Xong! Dữ liệu app nằm trong `%LOCALAPPDATA%\MochyMusic`. Phiên bản hiển thị trong **Settings**.
 
-| Bản phát hành | Ngày | Gói tải về | SHA-256 |
+| Bản phát hành | Ngày | Nội dung | Gói tải về |
 |---|---|---|---|
-| **v0.1.1** (mới nhất) | 16/11/2026 | [mochy-music-desktop-v0.1.1-windows-x64.zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.1/mochy-music-desktop-v0.1.1-windows-x64.zip) | *xem Release notes* |
-| v0.1.0 | 16/11/2026 | [mochy-music-desktop-v0.1.0-windows-x64.zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.0/mochy-music-desktop-v0.1.0-windows-x64.zip) | `C7EB5F601619B0F2ED0AAAC962B9FD38986134C68EBDF3CD2F17C874B3851C04` |
+| **v0.1.2** (mới nhất) | 16/11/2026 | Fix lyric chạy trước nhạc + bump version | [zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.2/mochy-music-desktop-v0.1.2-windows-x64.zip) |
+| v0.1.1 | 16/11/2026 | Fix lyric chạy trước nhạc (chưa bump version) | [zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.1/mochy-music-desktop-v0.1.1-windows-x64.zip) |
+| v0.1.0 | 16/11/2026 | Bản đầu (đã gồm fix đề xuất tìm kiếm) | [zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.0/mochy-music-desktop-v0.1.0-windows-x64.zip) |
 
 > 💡 Link **[releases/latest](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest)** luôn trỏ về bản mới nhất — ghi bookmark để cập nhật khi có phiên bản sau.
 >
