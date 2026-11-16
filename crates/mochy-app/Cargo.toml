@@ -15,6 +15,8 @@ mochy-audio = { path = "../mochy-audio" }
 mochy-innertube = { path = "../mochy-innertube" }
 mochy-lyrics = { path = "../mochy-lyrics" }
 mochy-storage = { path = "../mochy-storage" }
+mochy-integrations = { path = "../mochy-integrations" }
+mochy-importer = { path = "../mochy-importer" }
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "accesskit", "clipboard", "default_fonts", "links", "system_fonts", "wayland", "x11"] }
 egui = "0.37.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }

@@ -186,9 +186,8 @@ impl Worker {
             _ => {
                 // Nothing to show: clear, keep the pipe open.
                 self.hide(true).await;
-                if self.client.is_some() {
-                    self.set_status(PresenceConnection::Idle);
-                } else if !matches!(self.current_status(), PresenceConnection::Error(_)) {
+                // a refusal stays visible until something is shown again
+                if self.client.is_some() || !matches!(self.current_status(), PresenceConnection::Error(_)) {
                     self.set_status(PresenceConnection::Idle);
                 }
                 return;

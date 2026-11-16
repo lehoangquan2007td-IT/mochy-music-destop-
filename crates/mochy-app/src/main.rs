@@ -13,6 +13,7 @@ mod app;
 mod controller;
 mod db;
 mod images;
+mod integrations;
 mod local_scan;
 mod logging;
 mod lyrics;
