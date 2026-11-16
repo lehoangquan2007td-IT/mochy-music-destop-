@@ -42,7 +42,7 @@ Desktop port of [Mochy Music](https://github.com/realidkroo/mochy-music) (Androi
 GPL-3.0) written in **pure Rust** (no Node/Electron): `egui` GUI, `symphonia` +
 `cpal` audio engine with a full Audio Lab DSP chain, `reqwest` networking.
 
-> Status: working MVP. YouTube Music browse/search/playback, local files,
+> Status: v0.2.0 — most Android features ported. YouTube Music browse/search/playback, local files,
 > synced lyrics and the Audio Lab all work end to end. See "Known limitations".
 > `docs/PORT_SPEC.md` is the port specification extracted from the Android sources.
 
@@ -61,7 +61,30 @@ GPL-3.0) written in **pure Rust** (no Node/Electron): `egui` GUI, `symphonia` +
 - **Lyrics**: 10 providers queried in parallel and scored like Android (Apple Music/BetterLyrics,
   YouLyPlus, LrcRed, SimpMusic, LrcLib, Deezer, NetEase, QQMusic, Kugou); word-synced karaoke,
   duets, background vocals, click-to-seek, per-song offset (saved).
-- **Library**: liked songs, local playlists, history, most played; persistent queue.
+- **Library**: songs / albums / artists / playlists / recently added with search, sort and grid/list;
+  liked songs, local playlists, history grouped by day with "remove from history", most played;
+  save albums/artists/playlists; persistent queue.
+- **Explore**: new releases, charts, moods & genres, "see all" pages, home mood chips,
+  local shelves (quick picks, recently played, forgotten favorites) and infinite scroll.
+- **Stats & Recap**: listening time, top songs/artists/albums per week/month/year,
+  charts by day/hour/weekday, and a paged recap story.
+- **Transitions**: gapless, crossfade and beat-aware Crossmix (tempo/beat/key analysis, 14 styles),
+  fades on play/pause/skip/seek, skip silence, sleep timer, per-song speed/pitch memory.
+- **Downloads & offline**: download songs/albums/playlists (Opus remuxed to `.opus`, AAC as `.m4a`,
+  tags + cover + lyrics), download queue, Downloaded tab, offline playback, auto-download liked songs,
+  optional stream cache; edit song title/artist/album/cover and import lyrics files
+  (LRC/TTML/SRT/VTT/ASS/YRC/QRC/KRC).
+- **Lyrics extras**: translation (Google Translate), romanization (Japanese, Korean, Chinese, Cyrillic,
+  Hindi, Punjabi), YouTube Music / YouTube captions providers, embedded and sidecar `.lrc` lyrics,
+  auto-timing of plain lyrics from captions, alignment/weight/blur display options.
+- **Audio Lab v2**: hub with Equalizer / Audio FX / Headphones / Quality; AutoEq database browser
+  (6000+ headphones, fitted correction under your EQ); FX presets (Nightcore, Slowed + reverb…);
+  stream info ("stats for nerds").
+- **Now Playing styles**: Flagship (backgrounds, cover shapes), Turntable, Click wheel, Bedside clock;
+  animation speed, glass toggle, accent colours.
+- **Integrations**: Discord Rich Presence (your own application id), Last.fm / Libre.fm scrobbling with
+  offline queue, playlist importer (Spotify / Apple Music / Deezer / YouTube links, CSV, text lists)
+  with Android's TrackMatcher, undo and re-sync.
 - **Desktop**: Now Playing view with artwork-derived gradient & accent, output-device picker,
   OS media keys / Windows SMTC, keyboard shortcuts (Space, Ctrl+←/→, ←/→, Ctrl+↑/↓, Ctrl+F),
   remembers window size. Inter font (Vietnamese OK) + system CJK/Korean/Thai fallbacks.
@@ -104,8 +127,10 @@ Data lives in `%LOCALAPPDATA%\MochyMusic` (`mochy.db`, `settings.json`, `logs\mo
   refuses it ("stream cut off" / bot check); playback then fails until it recovers. Auto-skip
   stops after 3 consecutive failures to avoid making it worse. The Android app's extra
   fallbacks (InnerTubeX backend, player-JS signature deciphering) are not ported.
-- Not yet ported: crossfade/crossmix, skip silence, downloads, importer, Discord/Last.fm,
-  Shazam, AutoEq database browser, romanized lyrics, non-Flagship player styles.
+- Not yet ported: Shazam recognition, YouTube account sign-in/sync, music videos and
+  Spotify Canvas, Android-only features (USB DAC exclusive mode, car/TV/widgets).
+- Crossmix analysis downloads part of the current/next song; switch to Crossfade in
+  Settings → Transitions to save data.
 - "Low" quality uses HE-AAC; symphonia decodes only the LC core (sounds muffled) — use Auto/Medium.
 
 ---
