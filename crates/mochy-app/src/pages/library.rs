@@ -1,13 +1,17 @@
-//! Library: liked songs, local playlists, history, most played, local files.
+//! Library (port of `ui/screens/library/*`): songs, liked songs, albums,
+//! artists, playlists, recently added, history, most played, local files.
+//! Each tab is a self-contained view dispatched by `match tab`; the list
+//! views live in `library_views.rs`.
 
 use std::sync::Arc;
 
-use egui::{RichText, Ui, vec2};
+use egui::{RichText, Ui};
 use mochy_core::models::Song;
 
 use super::Data;
+use super::library_views::{self, ListKind};
 use crate::actions::{Action, Ctx};
-use crate::images::ImageSrc;
+use crate::browse::BrowseState;
 use crate::nav::{LibTab, Route};
 use crate::ui::i18n::{self, tr};
 use crate::widgets::{self, RowOpts, TEXT_DIM, icons::Icon};
@@ -25,7 +29,7 @@ pub enum LibEvent {
     Refresh,
 }
 
-pub fn show(ui: &mut Ui, cx: &mut Ctx, tab: LibTab, data: &Data, lib: &LibUi) -> Option<LibEvent> {
+pub fn show(ui: &mut Ui, cx: &mut Ctx, tab: LibTab, data: &Data, lib: &LibUi, st: &mut BrowseState) -> Option<LibEvent> {
     let mut ev = None;
     ui.horizontal(|ui| {
         widgets::page_title(ui, tr("Library"));
@@ -33,6 +37,11 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, tab: LibTab, data: &Data, lib: &LibUi) ->
         if widgets::icons::icon_button(ui, Icon::Repeat, 28.0, false, cx.accent).on_hover_text(tr("Refresh")).clicked() {
             ev = Some(LibEvent::Refresh);
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if widgets::accent_button(ui, Icon::Chart, tr("Stats"), cx.accent, false).clicked() {
+                cx.act(Action::Navigate(Route::Stats));
+            }
+        });
     });
     ui.horizontal_wrapped(|ui| {
         for t in LibTab::ALL {
@@ -44,48 +53,18 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, tab: LibTab, data: &Data, lib: &LibUi) ->
     ui.add_space(14.0);
 
     match tab {
-        LibTab::Liked => songs_tab(ui, cx, &data.liked, tr("No liked songs yet — tap ♥ on any song."), true),
-        LibTab::History => songs_tab(ui, cx, &data.history, tr("Nothing played yet."), false),
-        LibTab::MostPlayed => songs_tab(ui, cx, &data.most_played, tr("Nothing played yet."), false),
-        LibTab::Playlists => {
-            if widgets::accent_button(ui, Icon::Plus, tr("New playlist"), cx.accent, true).clicked() {
-                cx.act(Action::NewPlaylist(None));
-            }
-            ui.add_space(14.0);
-            if data.playlists.is_empty() {
-                ui.label(RichText::new(tr("No playlists yet.")).color(TEXT_DIM));
-            }
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(16.0, 16.0);
-                for p in &data.playlists {
-                    let songs = data.playlist_songs.get(&p.id);
-                    let src = p
-                        .thumbnail_url
-                        .clone()
-                        .map(ImageSrc::Url)
-                        .or_else(|| songs.and_then(|s| s.first()).and_then(crate::images::song_src));
-                    let count = songs.map(|s| s.len() as u32).unwrap_or(p.song_count);
-                    let resp = widgets::card(ui, cx, src.as_ref(), &p.name, &i18n::songs_count(count as usize), false);
-                    if resp.clicked() {
-                        cx.act(Action::Navigate(Route::LocalPlaylist(p.id.clone())));
-                    }
-                    resp.context_menu(|ui| {
-                        if ui.button(tr("Open")).clicked() {
-                            cx.act(Action::Navigate(Route::LocalPlaylist(p.id.clone())));
-                            ui.close();
-                        }
-                        if ui.button(tr("Rename…")).clicked() {
-                            cx.act(Action::RenamePlaylist(p.id.clone()));
-                            ui.close();
-                        }
-                        if ui.button(tr("Delete…")).clicked() {
-                            cx.act(Action::DeletePlaylist(p.id.clone()));
-                            ui.close();
-                        }
-                    });
-                }
-            });
+        LibTab::Songs => library_views::songs(ui, cx, data, st),
+        LibTab::Liked => {
+            library_views::toolbar(ui, cx, st, ListKind::Liked);
+            let list = library_views::filtered_songs(st, "liked", &data.liked, true);
+            songs_tab(ui, cx, &list, tr("No liked songs yet — tap ♥ on any song."), true);
         }
+        LibTab::Albums => library_views::albums(ui, cx, st),
+        LibTab::Artists => library_views::artists(ui, cx, st),
+        LibTab::Playlists => library_views::playlists(ui, cx, data, st),
+        LibTab::RecentlyAdded => library_views::recently_added(ui, cx, st),
+        LibTab::History => library_views::history(ui, cx, st),
+        LibTab::MostPlayed => songs_tab(ui, cx, &data.most_played, tr("Nothing played yet."), false),
         LibTab::Local => {
             ui.horizontal(|ui| {
                 if lib.scanning {
@@ -108,7 +87,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, tab: LibTab, data: &Data, lib: &LibUi) ->
     ev
 }
 
-fn songs_tab(ui: &mut Ui, cx: &mut Ctx, list: &Arc<Vec<Song>>, empty: &str, buttons: bool) {
+pub fn songs_tab(ui: &mut Ui, cx: &mut Ctx, list: &Arc<Vec<Song>>, empty: &str, buttons: bool) {
     if list.is_empty() {
         ui.label(RichText::new(empty).color(TEXT_DIM));
         return;

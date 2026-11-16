@@ -2,6 +2,9 @@
 //! cards, shelves, song context menu.
 
 pub mod icons;
+// ---- library/explore/stats ----
+pub mod menus;
+pub mod shelves;
 
 use std::sync::Arc;
 
@@ -382,6 +385,8 @@ pub struct RowOpts<'a> {
     pub show_album: bool,
     /// Local playlist id, enables "remove from playlist".
     pub playlist_ctx: Option<&'a str>,
+    /// History event id, enables "remove from history".
+    pub history_event: Option<i64>,
 }
 
 pub const ROW_H: f32 = 56.0;
@@ -482,8 +487,14 @@ pub fn song_row(ui: &mut Ui, cx: &mut Ctx, list: &Arc<Vec<Song>>, idx: usize, op
         }
         icons::paint(ui.painter(), more_rect.shrink(6.0), Icon::More, TEXT);
     }
-    egui::Popup::menu(&more_resp).show(|ui| song_menu(ui, cx, song, opts.playlist_ctx));
-    resp.context_menu(|ui| song_menu(ui, cx, song, opts.playlist_ctx));
+    egui::Popup::menu(&more_resp).show(|ui| {
+        song_menu(ui, cx, song, opts.playlist_ctx);
+        menus::song_menu_extra(ui, cx, song, &opts);
+    });
+    resp.context_menu(|ui| {
+        song_menu(ui, cx, song, opts.playlist_ctx);
+        menus::song_menu_extra(ui, cx, song, &opts);
+    });
 
     if resp.double_clicked() || lead_resp.clicked() {
         cx.act(Action::PlayList { songs: list.clone(), start: idx, shuffle: false });
@@ -535,22 +546,28 @@ pub fn album_card(ui: &mut Ui, cx: &mut Ctx, a: &Album) {
         Some(y) => format!("{} · {y}", tr("Album")),
         None => tr("Album").into(),
     };
-    if card(ui, cx, src.as_ref(), &a.title, &sub, false).clicked() {
+    let resp = card(ui, cx, src.as_ref(), &a.title, &sub, false);
+    if resp.clicked() {
         cx.act(Action::Navigate(Route::Album(a.id.clone())));
     }
+    resp.context_menu(|ui| menus::album_menu(ui, cx, a, &[]));
 }
 
 pub fn artist_card(ui: &mut Ui, cx: &mut Ctx, a: &Artist) {
     let src = a.thumbnail_url.clone().map(ImageSrc::Url);
-    if card(ui, cx, src.as_ref(), &a.name, tr("Artist"), true).clicked() {
+    let resp = card(ui, cx, src.as_ref(), &a.name, tr("Artist"), true);
+    if resp.clicked() {
         cx.act(Action::Navigate(Route::Artist(a.id.clone())));
     }
+    resp.context_menu(|ui| menus::artist_menu(ui, cx, a));
 }
 
 pub fn playlist_card(ui: &mut Ui, cx: &mut Ctx, p: &Playlist) {
     let src = p.thumbnail_url.clone().map(ImageSrc::Url);
     let sub = if p.song_count > 0 { format!("{} · {}", tr("Playlist"), i18n::songs_count(p.song_count as usize)) } else { tr("Playlist").into() };
-    if card(ui, cx, src.as_ref(), &p.name, &sub, false).clicked() {
+    let resp = card(ui, cx, src.as_ref(), &p.name, &sub, false);
+    resp.context_menu(|ui| menus::playlist_menu(ui, cx, p));
+    if resp.clicked() {
         let id = p.browse_id.clone().unwrap_or_else(|| p.id.clone());
         if id.starts_with("LP") {
             cx.act(Action::Navigate(Route::LocalPlaylist(id)));
@@ -573,7 +590,10 @@ pub fn song_card(ui: &mut Ui, cx: &mut Ctx, list: &Arc<Vec<Song>>, idx: usize, a
             cx.act(Action::PlaySong(s.clone()));
         }
     }
-    resp.context_menu(|ui| song_menu(ui, cx, s, None));
+    resp.context_menu(|ui| {
+        song_menu(ui, cx, s, None);
+        menus::song_menu_extra(ui, cx, s, &RowOpts::default());
+    });
 }
 
 /// Horizontal scrolling row of cards for a YTM shelf.

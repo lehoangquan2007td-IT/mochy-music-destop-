@@ -50,6 +50,9 @@ pub enum Action {
     LyricsOffset(i32),
     /// Sleep timer / per-song speed & pitch (`ui/transitions_ui.rs`).
     Transitions(crate::ui::transitions_ui::TransitionsAction),
+    // ---- library/explore/stats ----
+    /// Explore / library / stats intents, handled by `crate::browse::BrowseState`.
+    Browse(crate::browse::BrowseAction),
 }
 
 /// Remote/async data slot.

@@ -127,6 +127,8 @@ pub struct MochyApp {
     shots: Option<ShotRunner>,
     /// Discord presence, scrobbling, playlist importer.
     integrations: crate::integrations::Integrations,
+    /// Explore / browse / library parity / stats state.
+    browse: crate::browse::BrowseState,
 }
 
 impl MochyApp {
@@ -249,6 +251,7 @@ impl MochyApp {
             integrations: crate::integrations::Integrations::new(svc.clone()),
             shots: std::env::var_os("MOCHY_SHOTS").map(|d| ShotRunner { dir: d.into(), started: std::time::Instant::now(), step: 0, taken: false }),
             svc,
+            browse: Default::default(),
         };
         app.accent_applied.1 = app.settings.appearance.pure_black;
         app.load_home();
@@ -262,8 +265,8 @@ impl MochyApp {
     // ---------------------------------------------------------------------
 
     fn load_home(&mut self) {
-        self.data.home = Some(LoadState::Loading);
-        self.svc.ytm_call("home", |c| async move { c.home().await }, AppMsg::Home);
+        // Home feed with chips + continuation lives in `BrowseState`.
+        self.browse.load_home(&self.svc);
     }
 
     fn refresh_library(&self) {
@@ -296,6 +299,7 @@ impl MochyApp {
                 bus.send(AppMsg::Library(LibraryMsg::SearchHistory(v)));
             }
         });
+        self.browse.refresh_library(&self.svc);
     }
 
     fn refresh_playlists(&self) {
@@ -342,7 +346,7 @@ impl MochyApp {
             Route::LocalPlaylist(id) if !self.data.playlist_songs.contains_key(&id) => {
                 self.refresh_playlist_songs(&id);
             }
-            _ => {}
+            r => self.browse.ensure(&r, &self.svc),
         }
     }
 
@@ -411,12 +415,13 @@ impl MochyApp {
             AppMsg::Engine(ev) => {
                 if matches!(ev, mochy_audio::Event::Finished | mochy_audio::Event::NextStarted { .. }) {
                     // History changed.
+                    self.browse.mark_stale();
                     self.refresh_library_soon();
                 }
                 self.player.on_engine(ev);
             }
             AppMsg::YtmReady(r) => {
-                if r.is_ok() && matches!(self.data.home, Some(LoadState::Failed(_))) {
+                if r.is_ok() && self.browse.home_failed() {
                     self.load_home();
                 }
                 self.ytm_status = Some(r);
@@ -512,6 +517,10 @@ impl MochyApp {
                 self.devices = Some(d);
             }
             AppMsg::Toast(t) => self.toast(t),
+            AppMsg::Browse(m) => {
+                let effects = self.browse.on_msg(ctx, m, &self.svc);
+                self.run_browse_effects(effects);
+            }
         }
     }
 
@@ -722,6 +731,10 @@ impl MochyApp {
                 }
             }
             Action::Transitions(t) => crate::ui::transitions_ui::apply(&mut self.player, &mut self.settings, t),
+            Action::Browse(a) => {
+                let effects = self.browse.apply(a, &self.svc, &self.data);
+                self.run_browse_effects(effects);
+            }
         }
     }
 
@@ -1194,9 +1207,9 @@ impl MochyApp {
                 egui::ScrollArea::vertical().id_salt(("page", format!("{route:?}"))).auto_shrink([false, false]).show(ui, |ui| {
                     ui.set_max_width(ui.available_width() - 8.0);
                     match &route {
-                        Route::Home => home_retry = pages::home::show(ui, &mut cx, &self.data),
+                        Route::Home => home_retry = pages::home::show(ui, &mut cx, &self.data, &self.browse),
                         Route::Search => search_ev = pages::search::show(ui, &mut cx, &mut self.search, &self.data.search_history),
-                        Route::Library(tab) => lib_ev = pages::library::show(ui, &mut cx, *tab, &self.data, &self.lib),
+                        Route::Library(tab) => lib_ev = pages::library::show(ui, &mut cx, *tab, &self.data, &self.lib, &mut self.browse),
                         Route::LocalPlaylist(id) => {
                             let pl = self.data.playlists.iter().find(|p| p.id == *id);
                             pages::detail::local_playlist(ui, &mut cx, pl, self.data.playlist_songs.get(id));
@@ -1225,6 +1238,16 @@ impl MochyApp {
                                 },
                             );
                         }
+                        // ---- library/explore/stats ----
+                        Route::Explore => pages::explore::explore(ui, &mut cx, &self.browse),
+                        Route::MoodsGenres => pages::explore::moods(ui, &mut cx, &self.browse),
+                        Route::Charts | Route::NewReleases | Route::Browse { .. } | Route::ArtistMore { .. } => {
+                            pages::explore::browse_page(ui, &mut cx, &self.browse, &route)
+                        }
+                        Route::HomeSection(key) => pages::explore::home_section(ui, &mut cx, &self.browse, &self.data, key),
+                        Route::LibraryArtist(id) => pages::library_views::local_artist(ui, &mut cx, &self.browse, id),
+                        Route::LibraryAlbum(id) => pages::library_views::local_album(ui, &mut cx, &self.browse, id),
+                        Route::Stats => pages::stats::show(ui, &mut cx, &mut self.browse),
                     }
                 });
             });
@@ -1365,6 +1388,7 @@ impl eframe::App for MochyApp {
         crate::ui::i18n::set_lang(self.settings.appearance.language);
         crate::pages::player_styles::begin_frame(&ctx, &mut self.settings, self.player.current(), self.player.volume);
         self.images.begin_frame();
+        self.browse.publish_saved(&ctx);
         self.shortcuts(&ctx);
         self.window_housekeeping(&ctx);
         self.theme_housekeeping(&ctx);
@@ -1464,13 +1488,24 @@ impl MochyApp {
     fn run_shots(&mut self, ctx: &egui::Context) {
         let Some(sr) = self.shots.as_mut() else { return };
         // (name, route, seconds to wait before the shot — Home waits for network/art)
-        let steps: [(&str, Route, f32); 6] = [
+        let steps: [(&str, Route, f32); 16] = [
             ("home", Route::Home, 12.0),
             ("search", Route::Search, 3.0),
             ("library", Route::Library(LibTab::History), 3.0),
             ("audio_lab", Route::AudioLab, 3.0),
             ("settings", Route::Settings, 3.0),
             ("now_playing", Route::Home, 8.0),
+            // ---- library/explore/stats ----
+            ("explore", Route::Explore, 8.0),
+            ("moods", Route::MoodsGenres, 5.0),
+            ("charts", Route::Charts, 6.0),
+            ("mood_page", Route::Browse { id: "FEmusic_moods_and_genres_category".into(), params: Some("ggMPOg1uX1JOQWZFeDByc2Jm".into()) }, 7.0),
+            ("lib_songs", Route::Library(LibTab::Songs), 3.0),
+            ("lib_albums", Route::Library(LibTab::Albums), 3.0),
+            ("lib_artists", Route::Library(LibTab::Artists), 3.0),
+            ("lib_recent", Route::Library(LibTab::RecentlyAdded), 3.0),
+            ("stats", Route::Stats, 4.0),
+            ("recap", Route::Stats, 3.0),
         ];
         ctx.request_repaint_after(Duration::from_millis(100));
         if sr.step >= steps.len() {
@@ -1497,6 +1532,9 @@ impl MochyApp {
         if self.nav.current() != &route {
             self.nav.go(route);
         }
+        if name == "recap" && self.browse.stats.recap.is_none() {
+            self.browse.stats.recap = Some(crate::browse::RecapUi { page: 1, page_started: Instant::now() });
+        }
         let t = sr.started.elapsed().as_secs_f32();
         if !sr.taken && t >= wait {
             sr.taken = true;
@@ -1515,6 +1553,26 @@ impl MochyApp {
             sr.step += 1;
             sr.taken = false;
             sr.started = std::time::Instant::now();
+        }
+    }
+}
+
+// ---- library/explore/stats ----
+impl MochyApp {
+    /// Run what `BrowseState` asked for after an action or a message.
+    fn run_browse_effects(&mut self, effects: Vec<crate::browse::Effect>) {
+        use crate::browse::Effect;
+        for e in effects {
+            match e {
+                Effect::Act(a) => self.apply(a),
+                Effect::PlayNext(songs) => {
+                    self.toast(if songs.len() == 1 { format!("{}: {}", tr("Playing next"), songs[0].title) } else { format!("{}: {}", tr("Playing next"), crate::ui::i18n::songs_count(songs.len())) });
+                    for s in songs.into_iter().rev() {
+                        self.player.play_next(s);
+                    }
+                }
+                Effect::Toast(t) => self.toast(t),
+            }
         }
     }
 }

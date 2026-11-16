@@ -8,7 +8,8 @@ use mochy_core::models::{Album, Artist, Playlist, Shelf, ShelfItem, Song};
 use crate::actions::{Action, Ctx, LoadState};
 use crate::images::{ImageSrc, LARGE_PX};
 use crate::ui::i18n::{self, tr};
-use crate::widgets::{self, RowOpts, TEXT, TEXT_DIM, icons::Icon};
+use crate::nav::Route;
+use crate::widgets::{self, RowOpts, TEXT, TEXT_DIM, icons::Icon, menus, shelves};
 
 /// What the page wants from the app.
 pub enum DetailEvent {
@@ -105,7 +106,11 @@ pub fn album(ui: &mut Ui, cx: &mut Ctx, st: Option<&LoadState<(Album, Vec<Song>)
         sub.push_str(&format!(" · {d}"));
     }
     let src = al.thumbnail_url.clone().map(ImageSrc::Url);
-    header(ui, cx, src.as_ref(), false, tr("Album"), &al.title, &sub, al.description.as_deref(), Some(&list), |_, _| {});
+    let album_artists: Vec<mochy_core::models::ArtistRef> = songs.first().map(|s| s.artists.clone()).unwrap_or_default();
+    header(ui, cx, src.as_ref(), false, tr("Album"), &al.title, &sub, al.description.as_deref(), Some(&list), |ui, cx| {
+        menus::save_button(ui, cx, menus::SaveTarget::Album(al, &album_artists));
+        menus::more_button(ui, cx, |ui, cx| menus::album_menu(ui, cx, al, &album_artists));
+    });
     widgets::song_list(ui, cx, &list, RowOpts { numbered: true, ..Default::default() });
     None
 }
@@ -131,6 +136,8 @@ pub fn artist(ui: &mut Ui, cx: &mut Ctx, st: Option<&LoadState<(Artist, Vec<Shel
         {
             cx.act(Action::StartRadio(seed));
         }
+        menus::save_button(ui, cx, menus::SaveTarget::Artist(ar));
+        menus::more_button(ui, cx, |ui, cx| menus::artist_menu(ui, cx, ar));
     });
     let mut shown_top = false;
     for (i, shelf) in shelves.iter().enumerate() {
@@ -140,13 +147,20 @@ pub fn artist(ui: &mut Ui, cx: &mut Ctx, st: Option<&LoadState<(Artist, Vec<Shel
         let all_songs = shelf.items.iter().all(|i| matches!(i, ShelfItem::Song(_)));
         if all_songs && !shown_top {
             shown_top = true;
-            widgets::section_title(ui, &shelf.title);
+            if shelves::section_header(ui, cx, &shelf.title, None, None, true) {
+                cx.act(Action::Navigate(Route::ArtistMore { artist: ar.id.clone(), title: shelf.title.clone() }));
+            }
             for idx in 0..list.len().min(10) {
                 widgets::song_row(ui, cx, &list, idx, RowOpts { show_album: true, ..Default::default() });
             }
             ui.add_space(12.0);
         } else {
-            widgets::shelf_row(ui, cx, shelf, ("artist", &ar.id, i));
+            // "See all" resolves the shelf's endpoint on the artist page (ArtistItemsScreen).
+            if shelves::section_header(ui, cx, &shelf.title, None, None, true) {
+                cx.act(Action::Navigate(Route::ArtistMore { artist: ar.id.clone(), title: shelf.title.clone() }));
+            }
+            shelves::cards_row(ui, cx, &shelf.items, &[], ("artist", &ar.id, i));
+            ui.add_space(12.0);
         }
     }
     None
@@ -165,7 +179,10 @@ pub fn playlist(ui: &mut Ui, cx: &mut Ctx, st: Option<&LoadState<(Playlist, Vec<
         sub.push_str(&format!(" · {d}"));
     }
     let src = pl.thumbnail_url.clone().or_else(|| songs.first().and_then(|s| s.thumbnail_url.clone())).map(ImageSrc::Url);
-    header(ui, cx, src.as_ref(), false, tr("Playlist"), &pl.name, &sub, pl.description.as_deref(), Some(&list), |_, _| {});
+    header(ui, cx, src.as_ref(), false, tr("Playlist"), &pl.name, &sub, pl.description.as_deref(), Some(&list), |ui, cx| {
+        menus::save_button(ui, cx, menus::SaveTarget::Playlist(pl));
+        menus::more_button(ui, cx, |ui, cx| menus::playlist_menu(ui, cx, pl));
+    });
     widgets::song_list(ui, cx, &list, RowOpts { show_album: true, ..Default::default() });
     None
 }

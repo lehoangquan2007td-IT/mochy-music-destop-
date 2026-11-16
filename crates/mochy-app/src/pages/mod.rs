@@ -9,6 +9,10 @@ pub mod player_styles;
 pub mod search;
 pub mod settings;
 pub mod sidebar;
+// ---- library/explore/stats ----
+pub mod explore;
+pub mod library_views;
+pub mod stats;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

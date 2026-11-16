@@ -44,8 +44,10 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, route: &Route, playlists: &[Playlist], lo
     let sec = route.section();
     let items = [
         (Icon::Home, tr("Home"), Route::Home, 0u8),
+        (Icon::Compass, tr("Explore"), Route::Explore, 5),
         (Icon::Search, tr("Search"), Route::Search, 1),
-        (Icon::Library, tr("Library"), Route::Library(LibTab::Liked), 2),
+        (Icon::Library, tr("Library"), Route::Library(LibTab::Songs), 2),
+        (Icon::Chart, tr("Stats"), Route::Stats, 6),
         (Icon::AudioLab, "Audio Lab", Route::AudioLab, 3),
         (Icon::Settings, tr("Settings"), Route::Settings, 4),
     ];
@@ -77,10 +79,11 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, route: &Route, playlists: &[Playlist], lo
             cx.act(Action::Navigate(Route::Library(LibTab::Local)));
         }
         for p in playlists {
-            let selected = matches!(route, Route::LocalPlaylist(id) if *id == p.id);
+            let target = crate::widgets::menus::playlist_route(p);
+            let selected = *route == target;
             let resp = nav_item(ui, Icon::Playlist, &p.name, selected, cx.accent);
             if resp.clicked() {
-                cx.act(Action::Navigate(Route::LocalPlaylist(p.id.clone())));
+                cx.act(Action::Navigate(target));
             }
             resp.context_menu(|ui| {
                 if ui.button(tr("Rename…")).clicked() {
