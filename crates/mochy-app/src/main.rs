@@ -22,6 +22,7 @@ mod pages;
 mod queue;
 mod services;
 mod smoke;
+mod stream_facts;
 mod ui;
 mod widgets;
 

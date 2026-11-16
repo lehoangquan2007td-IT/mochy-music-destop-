@@ -17,6 +17,15 @@ mod theme;
 #[path = "../src/ui/audio_lab.rs"]
 mod audio_lab;
 
+// What the Audio Lab v2 pages reach for outside the widget files.
+mod ui {
+    #[path = "../../src/ui/i18n.rs"]
+    pub mod i18n;
+}
+
+#[path = "../src/stream_facts.rs"]
+mod stream_facts;
+
 #[path = "../src/ui/lyrics_view.rs"]
 mod lyrics_view;
 
