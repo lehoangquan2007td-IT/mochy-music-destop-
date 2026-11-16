@@ -1,0 +1,23 @@
+[package]
+name = "mochy-importer"
+description = "Playlist importer: Spotify / Apple Music / Deezer / YouTube links, CSV, account libraries, TrackMatcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mochy-core = { path = "../mochy-core" }
+mochy-innertube = { path = "../mochy-innertube" }
+mochy-storage = { path = "../mochy-storage" }
+base64 = "0.22.1"
+regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "gzip", "deflate", "rustls"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt", "time", "sync", "macros"] }
+tracing = "0.1.44"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "sync", "macros"] }

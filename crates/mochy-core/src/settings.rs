@@ -322,4 +322,7 @@ pub struct AppSettings {
     pub audio_lab: AudioLab,
     pub lyrics: LyricsSettings,
     pub misc: Misc,
+    /// Discord presence + scrobbling (see `crate::integrations`).
+    #[serde(default)]
+    pub integrations: crate::integrations::IntegrationSettings,
 }

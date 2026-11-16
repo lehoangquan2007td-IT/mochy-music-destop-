@@ -7,6 +7,7 @@
 pub mod eq;
 pub mod error;
 pub mod ids;
+pub mod integrations;
 pub mod models;
 pub mod settings;
 
