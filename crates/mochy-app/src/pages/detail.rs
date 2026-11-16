@@ -58,6 +58,7 @@ fn header(
                     if widgets::accent_button(ui, Icon::Queue, tr("Add to queue"), cx.accent, false).clicked() {
                         cx.act(Action::AddToQueue(list.as_ref().clone()));
                     }
+                    crate::downloads::ui::download_all_button(ui, cx, list);
                 }
                 extra(ui, cx);
             });

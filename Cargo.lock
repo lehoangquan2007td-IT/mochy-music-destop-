@@ -2392,6 +2392,7 @@ dependencies = [
  "lofty",
  "mochy-audio",
  "mochy-core",
+ "mochy-download",
  "mochy-innertube",
  "mochy-lyrics",
  "mochy-storage",

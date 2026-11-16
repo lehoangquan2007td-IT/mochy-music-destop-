@@ -7,10 +7,12 @@ pub enum LibTab {
     History,
     MostPlayed,
     Local,
+    /// Downloaded songs + download queue (downloads module).
+    Downloaded,
 }
 
 impl LibTab {
-    pub const ALL: [LibTab; 5] = [LibTab::Liked, LibTab::Playlists, LibTab::History, LibTab::MostPlayed, LibTab::Local];
+    pub const ALL: [LibTab; 6] = [LibTab::Liked, LibTab::Playlists, LibTab::History, LibTab::MostPlayed, LibTab::Local, LibTab::Downloaded];
     pub fn label(self) -> &'static str {
         crate::ui::i18n::tr(match self {
             LibTab::Liked => "Liked songs",
@@ -18,6 +20,7 @@ impl LibTab {
             LibTab::History => "History",
             LibTab::MostPlayed => "Most played",
             LibTab::Local => "Local files",
+            LibTab::Downloaded => "Downloaded",
         })
     }
 }

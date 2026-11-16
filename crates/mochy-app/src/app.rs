@@ -199,6 +199,8 @@ impl MochyApp {
             ctx.load_texture("mochy_logo", img, egui::TextureOptions::LINEAR)
         });
 
+        crate::downloads::init(svc.clone(), ctx.clone(), &settings);
+        crate::songedit::init(&svc);
         let images = ImageCache::new(svc.clone());
         let window_seen = (settings.misc.window_width, settings.misc.window_height, settings.misc.window_maximized);
         let mut app = Self {
@@ -453,7 +455,10 @@ impl MochyApp {
             AppMsg::Related { video_id, result } => {
                 self.data.related.insert(video_id, LoadState::from_result(result));
             }
-            AppMsg::Prepared { generation, uid, result } => self.player.on_prepared(generation, uid, result),
+            AppMsg::Prepared { generation, uid, result } => {
+                crate::downloads::observe_prepared(&self.player, uid, &result);
+                self.player.on_prepared(generation, uid, result)
+            }
             AppMsg::Prefetched { video_id, stream } => self.player.on_prefetched(video_id, stream),
             AppMsg::Radio { seed, result, play_after } => self.player.on_radio(seed, result, play_after),
             AppMsg::QueueRestored { songs, index } => self.player.on_restored(songs, index),
@@ -896,6 +901,7 @@ impl MochyApp {
             let old = std::mem::replace(&mut self.settings_seen, self.settings.clone());
             self.settings_dirty = Some(Instant::now());
             self.player.cfg = CtlCfg::from_settings(&self.settings);
+            crate::downloads::on_settings(&self.settings);
             if old.audio_lab.normalize_replay_gain != self.settings.audio_lab.normalize_replay_gain
                 || old.audio_lab.normalize_preamp_db != self.settings.audio_lab.normalize_preamp_db
             {
@@ -996,6 +1002,7 @@ impl MochyApp {
             return;
         }
         self.last_uid = uid;
+        crate::songedit::apply_queue(&mut self.player.queue);
         self.np.scroll_to_current = true;
         if self.lyrics_for.as_deref() != self.player.current().map(|s| s.id.as_str()) {
             self.lyrics = LyricsState::Idle;
@@ -1348,6 +1355,16 @@ impl eframe::App for MochyApp {
         self.theme_housekeeping(&ctx);
         self.draw(ui);
         self.handle_dialog(&ctx);
+        // Song editing (songedit): edit window, then refresh what an edit touched.
+        crate::songedit::ui::show(&ctx, &self.svc, &mut self.images);
+        let edited = crate::songedit::take_changed();
+        if !edited.is_empty() {
+            crate::songedit::apply_queue(&mut self.player.queue);
+            if self.lyrics_for.as_ref().is_some_and(|id| edited.contains(id)) {
+                self.lyrics_for = None;
+            }
+            self.refresh_library();
+        }
         self.draw_toasts(&ctx);
         if let Some(t) = self.copy_request.take() {
             ctx.copy_text(t);

@@ -103,6 +103,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, tab: LibTab, data: &Data, lib: &LibUi) ->
             ui.add_space(12.0);
             songs_tab(ui, cx, &data.local, tr("No local files yet — add a music folder."), true);
         }
+        LibTab::Downloaded => crate::downloads::ui::downloaded_tab(ui, cx),
     }
     ev
 }
