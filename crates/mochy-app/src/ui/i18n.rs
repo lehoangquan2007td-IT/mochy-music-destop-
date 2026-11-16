@@ -330,6 +330,7 @@ static VI: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
         ("There you go", "Thế đấy!"),
         ("Click to continue", "Bấm để tiếp tục"),
         ("Close", "Đóng"),
+        ("Earlier", "Trước đó"),
     ])
 });
 

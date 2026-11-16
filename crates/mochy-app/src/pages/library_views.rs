@@ -411,7 +411,8 @@ pub fn recently_added(ui: &mut Ui, cx: &mut Ctx, st: &mut BrowseState) {
     // Group by when it was added, like the history.
     let mut groups: Vec<(String, Vec<ShelfItem>, Vec<String>)> = Vec::new();
     for r in recent.iter() {
-        let label = day_group_label(local_day_index(r.at, off), today);
+        // Rows written by old builds carry a boolean (1) instead of a date.
+        let label = if r.at < 946_684_800_000 { tr("Earlier").to_string() } else { day_group_label(local_day_index(r.at, off), today) };
         let sub = match &r.item {
             ShelfItem::Song(s) => format!("{} • {}", tr("Song"), artists_line(s)),
             ShelfItem::Album(_) => tr("Album").to_string(),
@@ -638,10 +639,10 @@ mod tests {
 
     #[test]
     fn civil_dates_and_day_groups() {
-        // 2026-11-17 is day 20409 (a Tuesday).
-        assert_eq!(civil_from_days(20_409), (2026, 11, 17));
+        // 2026-11-17 is day 20774 (a Tuesday).
+        assert_eq!(civil_from_days(20_774), (2026, 11, 17));
         assert_eq!(civil_from_days(0), (1970, 1, 1));
-        let today = 20_409;
+        let today = 20_774;
         assert_eq!(day_group(today, today), DayGroup::Today);
         assert_eq!(day_group(today - 1, today), DayGroup::Yesterday);
         assert_eq!(day_group(today - 2, today), DayGroup::LastWeek, "Sunday before a Tuesday is last week");

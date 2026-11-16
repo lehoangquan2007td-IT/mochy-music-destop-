@@ -226,3 +226,51 @@ fn saved_albums_artists_playlists() {
     assert!(db.playlists().unwrap().iter().all(|p| p.id != "PLremote"), "remote row removed");
     assert!(db.library_album_entries().unwrap().iter().all(|a| a.album.id != "MPRE_s"));
 }
+
+#[test]
+fn real_typed_play_times_do_not_break_stats() {
+    // Rows written by other builds can carry REAL play times / totals.
+    let t = TempDir::new("real");
+    let db = t.db();
+    db.upsert_song(&song("r", "Real", &[("UC_r", "Ray")], Some(("MPRE_r", "R")))).unwrap();
+    db.with_connection(|c| {
+        c.execute("INSERT INTO event (songId, timestamp, playTime) VALUES ('r', ?1, 1500.5)", [T0])?;
+        // A corrupt, saturated value is ignored instead of overflowing the sums.
+        c.execute("INSERT INTO event (songId, timestamp, playTime) VALUES ('r', ?1, 9.223372036854776e18)", [T0 + 1])?;
+        c.execute("UPDATE song SET totalPlayTime = 1500.5, inLibrary = 1 WHERE id = 'r'", [])
+    })
+    .unwrap();
+    let (from, to) = (T0 - DAY, T0 + DAY);
+    assert_eq!(db.stats_summary(from, to).unwrap().total_ms, 1500);
+    assert_eq!(db.top_songs_between(from, to, 5).unwrap()[0].ms, 1500);
+    assert_eq!(db.top_artists_between(from, to, 5).unwrap()[0].ms, 1500);
+    assert_eq!(db.top_albums_between(from, to, 5).unwrap()[0].ms, 1500);
+    assert_eq!(db.listening_buckets(from, to).unwrap().by_hour.iter().sum::<i64>(), 1500);
+    let h = db.history_events(5).unwrap();
+    assert_eq!((h[0].play_time_ms, h[1].play_time_ms), (0, 1500), "corrupt play counts as 0");
+    assert!(!db.library_album_entries().unwrap().is_empty());
+    assert!(!db.library_artist_entries().unwrap().is_empty());
+}
+
+#[test]
+fn legacy_real_columns_are_converted_only_once() {
+    // Old desktop builds created `event.playTime` / `song.totalPlayTime` as REAL
+    // seconds. The ms conversion must run once, not on every open.
+    let t = TempDir::new("legacy");
+    let path = t.0.join("mochy.db");
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE `song` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, `duration` INTEGER NOT NULL, `thumbnailUrl` TEXT, `albumId` TEXT, `albumName` TEXT, `explicit` INTEGER NOT NULL DEFAULT 0, `year` INTEGER, `date` INTEGER, `dateModified` INTEGER, `liked` INTEGER NOT NULL, `likedDate` INTEGER, `totalPlayTime` REAL NOT NULL DEFAULT 0.0, `inLibrary` INTEGER, `dateDownload` INTEGER, `isLocal` INTEGER NOT NULL DEFAULT false, `libraryAddToken` TEXT, `libraryRemoveToken` TEXT, `lyricsOffset` INTEGER NOT NULL DEFAULT 0, `romanizeLyrics` INTEGER NOT NULL DEFAULT true, `isDownloaded` INTEGER NOT NULL DEFAULT 0, `isUploaded` INTEGER NOT NULL DEFAULT false, `isVideo` INTEGER NOT NULL DEFAULT false, `localUri` TEXT DEFAULT NULL, `addedByLike` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`id`));
+             CREATE TABLE `event` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `songId` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, `playTime` REAL NOT NULL DEFAULT 0.0);
+             INSERT INTO song (id, title, duration, liked, totalPlayTime) VALUES ('x', 'X', 200, 0, 30.5);
+             INSERT INTO event (songId, timestamp, playTime) VALUES ('x', 1780272000000, 30.5);",
+        )
+        .unwrap();
+    }
+    for _ in 0..3 {
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.stats_summary(0, i64::MAX).unwrap().total_ms, 30_500);
+        assert_eq!(db.get_song("x").unwrap().unwrap().total_play_time, 30.5);
+    }
+}

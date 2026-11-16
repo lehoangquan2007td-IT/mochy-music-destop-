@@ -27,6 +27,11 @@ pub fn hours_minutes(ms: i64) -> String {
     format!("{}h {:02}m", m / 60, m % 60)
 }
 
+/// Compact bar label: "1.5h" or "12m".
+fn short_duration(ms: i64) -> String {
+    if ms >= 3_600_000 { format!("{}h", hours_decimal(ms)) } else { format!("{}m", (ms / 60_000).max(0)) }
+}
+
 /// "3.4" hours with one decimal (Android `formatHoursDecimal`).
 pub fn hours_decimal(ms: i64) -> String {
     let t = (ms / 360_000).max(0);
@@ -142,7 +147,7 @@ fn bar_chart(ui: &mut Ui, id: &str, values: &[i64], labels: &[String], label_eve
             let c = if hovered == Some(i) || peak == Some(i) { fill } else { fill.gamma_multiply(0.62) };
             p.rect_filled(r, CornerRadius { nw: cr, ne: cr, sw: 0, se: 0 }, c);
             if peak == Some(i) && hovered.is_none() {
-                p.text(pos2(r.center().x, r.top() - 3.0), Align2::CENTER_BOTTOM, hours_decimal(v) + "h", FontId::proportional(11.0), TEXT_DIM);
+                p.text(pos2(r.center().x, r.top() - 3.0), Align2::CENTER_BOTTOM, short_duration(v), FontId::proportional(11.0), TEXT_DIM);
             }
         }
         if label_every > 0 && (i % label_every == 0 || i + 1 == n) && labels.len() == n {
@@ -161,11 +166,21 @@ fn card_frame() -> egui::Frame {
     egui::Frame::new().fill(SURFACE).corner_radius(14).inner_margin(16)
 }
 
+/// Card of fixed width whose content stacks vertically (inside horizontal rows).
+fn vcard(ui: &mut Ui, w: f32, add: impl FnOnce(&mut Ui)) {
+    card_frame().show(ui, |ui| {
+        ui.set_width(w - 32.0);
+        ui.vertical(add);
+    });
+}
+
 fn stat_tile(ui: &mut Ui, value: &str, label: &str, w: f32) {
     card_frame().show(ui, |ui| {
         ui.set_width(w - 32.0);
-        ui.label(RichText::new(value).size(26.0).strong().color(TEXT));
-        ui.label(RichText::new(label).size(12.5).color(TEXT_DIM));
+        ui.vertical(|ui| {
+            ui.label(RichText::new(value).size(26.0).strong().color(TEXT));
+            ui.label(RichText::new(label).size(12.5).color(TEXT_DIM));
+        });
     });
 }
 
@@ -242,13 +257,16 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, st: &mut BrowseState) {
 
     // Totals.
     let avail = ui.available_width();
-    let tile_w = ((avail - 4.0 * 12.0) / 5.0).max(120.0);
-    ui.horizontal_wrapped(|ui| {
+    // The total tile is two units wide (+ the gap it spans): 6 units + 5 gaps.
+    let tile_w = ((avail - 5.0 * 12.0) / 6.0).floor().max(110.0);
+    ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
         card_frame().show(ui, |ui| {
             ui.set_width(tile_w * 2.0 + 12.0 - 32.0);
-            ui.label(RichText::new(tr("Total listening time")).size(12.5).color(TEXT_DIM));
-            ui.label(RichText::new(hours_minutes(d.summary.total_ms)).size(40.0).strong().color(widgets::accent_light(cx.accent)));
+            ui.vertical(|ui| {
+                ui.label(RichText::new(tr("Total listening time")).size(12.5).color(TEXT_DIM));
+                ui.label(RichText::new(hours_minutes(d.summary.total_ms)).size(40.0).strong().color(widgets::accent_light(cx.accent)));
+            });
         });
         stat_tile(ui, &d.summary.plays.to_string(), tr("plays"), tile_w);
         stat_tile(ui, &d.summary.songs.to_string(), tr("songs"), tile_w);
@@ -294,11 +312,10 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, st: &mut BrowseState) {
     ui.add_space(12.0);
 
     // Hour / weekday.
-    let half = ((ui.available_width() - 12.0) / 2.0).max(260.0);
-    ui.horizontal_wrapped(|ui| {
+    let half = ((ui.available_width() - 12.0) / 2.0).floor().max(260.0);
+    ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
-        card_frame().show(ui, |ui| {
-            ui.set_width(half - 32.0);
+        vcard(ui, half, |ui| {
             ui.label(RichText::new(tr("By hour of day")).size(15.0).strong());
             if let Some(h) = argmax(&d.buckets.by_hour) {
                 ui.label(
@@ -310,8 +327,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, st: &mut BrowseState) {
             let labels: Vec<String> = (0..24).map(|h| format!("{h}")).collect();
             bar_chart(ui, "hours", &d.buckets.by_hour, &labels, 3, 140.0, cx.accent);
         });
-        card_frame().show(ui, |ui| {
-            ui.set_width(half - 32.0);
+        vcard(ui, half, |ui| {
             ui.label(RichText::new(tr("By weekday")).size(15.0).strong());
             if let Some(w) = argmax(&d.buckets.by_weekday) {
                 ui.label(

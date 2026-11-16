@@ -125,6 +125,15 @@ pub struct ListeningBuckets {
     pub by_day: Vec<(String, i64)>,
 }
 
+/// Longest plausible single play (6 h) / lifetime total (~3 years) in ms;
+/// rows outside count as 0 (corrupt REAL values written by other builds).
+const MAX_PLAY_MS: i64 = 21_600_000;
+const MAX_TOTAL_MS: i64 = 100_000_000_000;
+
+/// Album columns for `album_from_row`, tolerant of NULL counts written by
+/// other builds (Room declares them NOT NULL).
+const ALBUM_COLS: &str = "a.id, a.playlistId, a.title, a.year, a.thumbnailUrl, COALESCE(a.songCount, 0) AS songCount,      COALESCE(a.duration, 0) AS duration, a.description, a.bookmarkedAt";
+
 /// SQL expression: an epoch-ms column as SQLite local time.
 fn local(col: &str) -> String {
     format!("{col} / 1000, 'unixepoch', 'localtime'")
@@ -156,7 +165,7 @@ impl Db {
     /// The newest `limit` plays (one entry per event), newest first.
     pub fn history_events(&self, limit: usize) -> StorageResult<Vec<HistoryEntry>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT id, songId, timestamp, playTime FROM event ORDER BY timestamp DESC, id DESC LIMIT ?1")?;
+        let mut stmt = conn.prepare(&format!("SELECT id, songId, timestamp, CASE WHEN playTime BETWEEN 0 AND {MAX_PLAY_MS} THEN CAST(playTime AS INTEGER) ELSE 0 END FROM event ORDER BY timestamp DESC, id DESC LIMIT ?1"))?;
         let rows: Vec<(i64, String, i64, i64)> = stmt
             .query_map(params![limit as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<rusqlite::Result<_>>()?;
@@ -280,13 +289,13 @@ impl Db {
     /// Library albums: saved ones plus albums of library songs.
     pub fn library_album_entries(&self) -> StorageResult<Vec<AlbumEntry>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT a.*,
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {ALBUM_COLS},
                 (SELECT COUNT(*) FROM song_album_map m JOIN song s ON s.id = m.songId
                   WHERE m.albumId = a.id AND s.inLibrary IS NOT NULL) AS libSongs,
                 (SELECT MIN(s.inLibrary) FROM song_album_map m JOIN song s ON s.id = m.songId
                   WHERE m.albumId = a.id AND s.inLibrary IS NOT NULL) AS firstAdded,
-                (SELECT COALESCE(SUM(s.totalPlayTime), 0) FROM song_album_map m JOIN song s ON s.id = m.songId
+                (SELECT CAST(COALESCE(TOTAL(CASE WHEN s.totalPlayTime BETWEEN 0 AND {MAX_TOTAL_MS} THEN s.totalPlayTime ELSE 0 END), 0) AS INTEGER) FROM song_album_map m JOIN song s ON s.id = m.songId
                   WHERE m.albumId = a.id) AS playMs,
                 (SELECT group_concat(name, ', ') FROM (SELECT ar.name FROM album_artist_map aam JOIN artist ar ON ar.id = aam.artistId
                   WHERE aam.albumId = a.id ORDER BY aam.`order`)) AS albumArtists,
@@ -295,8 +304,8 @@ impl Db {
                 (SELECT s.thumbnailUrl FROM song_album_map m JOIN song s ON s.id = m.songId
                   WHERE m.albumId = a.id AND s.thumbnailUrl IS NOT NULL LIMIT 1) AS songThumb
              FROM album a
-             WHERE a.bookmarkedAt IS NOT NULL OR libSongs > 0",
-        )?;
+             WHERE a.bookmarkedAt IS NOT NULL OR libSongs > 0"
+        ))?;
         let v = stmt
             .query_map([], |r| {
                 let mut album = album_from_row(r)?;
@@ -323,19 +332,19 @@ impl Db {
     /// Library artists: saved ones plus artists of library songs.
     pub fn library_artist_entries(&self) -> StorageResult<Vec<ArtistEntry>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT a.*,
                 (SELECT COUNT(*) FROM song_artist_map m JOIN song s ON s.id = m.songId
                   WHERE m.artistId = a.id AND s.inLibrary IS NOT NULL) AS libSongs,
                 (SELECT MIN(s.inLibrary) FROM song_artist_map m JOIN song s ON s.id = m.songId
                   WHERE m.artistId = a.id AND s.inLibrary IS NOT NULL) AS firstAdded,
-                (SELECT COALESCE(SUM(s.totalPlayTime), 0) FROM song_artist_map m JOIN song s ON s.id = m.songId
+                (SELECT CAST(COALESCE(TOTAL(CASE WHEN s.totalPlayTime BETWEEN 0 AND {MAX_TOTAL_MS} THEN s.totalPlayTime ELSE 0 END), 0) AS INTEGER) FROM song_artist_map m JOIN song s ON s.id = m.songId
                   WHERE m.artistId = a.id) AS playMs,
                 (SELECT s.thumbnailUrl FROM song_artist_map m JOIN song s ON s.id = m.songId
                   WHERE m.artistId = a.id AND s.thumbnailUrl IS NOT NULL ORDER BY s.totalPlayTime DESC LIMIT 1) AS songThumb
              FROM artist a
-             WHERE (a.bookmarkedAt IS NOT NULL OR libSongs > 0) AND a.name != ''",
-        )?;
+             WHERE (a.bookmarkedAt IS NOT NULL OR libSongs > 0) AND a.name != ''"
+        )        )?;
         let v = stmt
             .query_map([], |r| {
                 let mut artist = artist_from_row(r)?;
@@ -375,7 +384,7 @@ impl Db {
             let at = added.get(&s.id).copied().unwrap_or(0);
             out.push(RecentItem { at, item: ShelfItem::Song(s) });
         }
-        let mut stmt = conn.prepare("SELECT * FROM album WHERE bookmarkedAt IS NOT NULL ORDER BY bookmarkedAt DESC LIMIT ?1")?;
+        let mut stmt = conn.prepare(&format!("SELECT {ALBUM_COLS} FROM album a WHERE a.bookmarkedAt IS NOT NULL ORDER BY a.bookmarkedAt DESC LIMIT ?1"))?;
         for r in stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, i64>("bookmarkedAt")?, album_from_row(r)?)))? {
             let (at, a) = r?;
             out.push(RecentItem { at, item: ShelfItem::Album(a) });
@@ -429,7 +438,7 @@ impl Db {
     pub fn stats_summary(&self, from: i64, to: i64) -> StorageResult<StatsSummary> {
         let conn = self.conn();
         let (total_ms, plays, songs): (i64, i64, i64) = conn.query_row(
-            "SELECT COALESCE(SUM(playTime), 0), COUNT(*), COUNT(DISTINCT songId) FROM event WHERE timestamp >= ?1 AND timestamp < ?2",
+            &format!("SELECT CAST(COALESCE(TOTAL(CASE WHEN playTime BETWEEN 0 AND {MAX_PLAY_MS} THEN playTime ELSE 0 END), 0) AS INTEGER), COUNT(*), COUNT(DISTINCT songId) FROM event WHERE timestamp >= ?1 AND timestamp < ?2"),
             params![from, to],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
@@ -452,10 +461,10 @@ impl Db {
     /// (Android `RecapRepository` order).
     pub fn top_songs_between(&self, from: i64, to: i64, limit: usize) -> StorageResult<Vec<StatSong>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT songId, COUNT(*) AS plays, COALESCE(SUM(playTime), 0) AS ms FROM event
-             WHERE timestamp >= ?1 AND timestamp < ?2 GROUP BY songId ORDER BY plays DESC, ms DESC LIMIT ?3",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT songId, COUNT(*) AS plays, CAST(COALESCE(TOTAL(CASE WHEN playTime BETWEEN 0 AND {MAX_PLAY_MS} THEN playTime ELSE 0 END), 0) AS INTEGER) AS ms FROM event
+             WHERE timestamp >= ?1 AND timestamp < ?2 GROUP BY songId ORDER BY plays DESC, ms DESC LIMIT ?3"
+        )        )?;
         let rows: Vec<(String, i64, i64)> =
             stmt.query_map(params![from, to, limit as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
         drop(stmt);
@@ -473,15 +482,15 @@ impl Db {
     /// name like Android does.
     pub fn top_artists_between(&self, from: i64, to: i64, limit: usize) -> StorageResult<Vec<StatArtist>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT a.*, COUNT(e.id) AS plays, COALESCE(SUM(e.playTime), 0) AS ms,
+        let mut stmt = conn.prepare(&format!(
+            "SELECT a.*, COUNT(e.id) AS plays, CAST(COALESCE(TOTAL(CASE WHEN e.playTime BETWEEN 0 AND {MAX_PLAY_MS} THEN e.playTime ELSE 0 END), 0) AS INTEGER) AS ms,
                 (SELECT s.thumbnailUrl FROM event e2 JOIN song_artist_map m2 ON m2.songId = e2.songId JOIN song s ON s.id = e2.songId
                   WHERE m2.artistId = a.id AND e2.timestamp >= ?1 AND e2.timestamp < ?2 AND s.thumbnailUrl IS NOT NULL
-                  GROUP BY e2.songId ORDER BY SUM(e2.playTime) DESC LIMIT 1) AS topThumb
+                  GROUP BY e2.songId ORDER BY TOTAL(CASE WHEN e2.playTime BETWEEN 0 AND {MAX_PLAY_MS} THEN e2.playTime ELSE 0 END) DESC LIMIT 1) AS topThumb
              FROM event e JOIN song_artist_map m ON m.songId = e.songId JOIN artist a ON a.id = m.artistId
              WHERE e.timestamp >= ?1 AND e.timestamp < ?2 AND trim(a.name) != ''
-             GROUP BY a.id ORDER BY ms DESC",
-        )?;
+             GROUP BY a.id ORDER BY ms DESC"
+        )        )?;
         let rows: Vec<StatArtist> = stmt
             .query_map(params![from, to], |r| {
                 Ok(StatArtist {
@@ -523,13 +532,13 @@ impl Db {
     /// Most listened albums of `[from, to)` by time.
     pub fn top_albums_between(&self, from: i64, to: i64, limit: usize) -> StorageResult<Vec<StatAlbum>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT s.albumId, COUNT(e.id) AS plays, COALESCE(SUM(e.playTime), 0) AS ms,
+        let mut stmt = conn.prepare(&format!(
+            "SELECT s.albumId, COUNT(e.id) AS plays, CAST(COALESCE(TOTAL(CASE WHEN e.playTime BETWEEN 0 AND {MAX_PLAY_MS} THEN e.playTime ELSE 0 END), 0) AS INTEGER) AS ms,
                     MAX(s.albumName) AS songAlbumName, MAX(s.thumbnailUrl) AS songThumb, MIN(s.id) AS anySong
              FROM event e JOIN song s ON s.id = e.songId
              WHERE e.timestamp >= ?1 AND e.timestamp < ?2 AND s.albumId IS NOT NULL AND s.albumId != ''
-             GROUP BY s.albumId ORDER BY ms DESC, plays DESC LIMIT ?3",
-        )?;
+             GROUP BY s.albumId ORDER BY ms DESC, plays DESC LIMIT ?3"
+        )        )?;
         let rows: Vec<(String, i64, i64, Option<String>, Option<String>, String)> = stmt
             .query_map(params![from, to, limit as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
             .collect::<rusqlite::Result<_>>()?;
@@ -537,7 +546,7 @@ impl Db {
         let mut out = Vec::with_capacity(rows.len());
         for (album_id, plays, ms, song_album, song_thumb, any_song) in rows {
             let mut album = conn
-                .query_row("SELECT * FROM album WHERE id = ?1", params![album_id], album_from_row)
+                .query_row(&format!("SELECT {ALBUM_COLS} FROM album a WHERE a.id = ?1"), params![album_id], album_from_row)
                 .optional()?
                 .unwrap_or_else(|| Album { id: album_id.clone(), ..Default::default() });
             if album.title.is_empty() {
@@ -565,21 +574,21 @@ impl Db {
         let mut b = ListeningBuckets::default();
         let ts = local("timestamp");
         let mut stmt = conn.prepare(&format!(
-            "SELECT CAST(strftime('%H', {ts}) AS INTEGER), CAST(strftime('%w', {ts}) AS INTEGER), SUM(playTime)
+            "SELECT CAST(strftime('%H', {ts}) AS INTEGER), CAST(strftime('%w', {ts}) AS INTEGER), CAST(TOTAL(CASE WHEN playTime BETWEEN 0 AND {MAX_PLAY_MS} THEN playTime ELSE 0 END) AS INTEGER)
              FROM event WHERE timestamp >= ?1 AND timestamp < ?2 GROUP BY 1, 2"
         ))?;
         for r in stmt.query_map(params![from, to], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))? {
             let (h, w, ms) = r?;
             if (0..24).contains(&h) {
-                b.by_hour[h as usize] += ms;
+                b.by_hour[h as usize] = b.by_hour[h as usize].saturating_add(ms);
             }
             if (0..7).contains(&w) {
                 // %w: 0 = Sunday → Monday-first index.
-                b.by_weekday[((w + 6) % 7) as usize] += ms;
+                b.by_weekday[((w + 6) % 7) as usize] = b.by_weekday[((w + 6) % 7) as usize].saturating_add(ms);
             }
         }
         let mut stmt = conn.prepare(&format!(
-            "SELECT strftime('%Y-%m-%d', {ts}) AS d, SUM(playTime) FROM event
+            "SELECT strftime('%Y-%m-%d', {ts}) AS d, CAST(TOTAL(CASE WHEN playTime BETWEEN 0 AND {MAX_PLAY_MS} THEN playTime ELSE 0 END) AS INTEGER) FROM event
              WHERE timestamp >= ?1 AND timestamp < ?2 GROUP BY d ORDER BY d"
         ))?;
         b.by_day = stmt.query_map(params![from, to], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;

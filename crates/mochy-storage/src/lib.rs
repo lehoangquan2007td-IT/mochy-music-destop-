@@ -275,7 +275,8 @@ fn song_from_row(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<Song> {
     let is_local: bool = row.get("isLocal")?;
     let local_uri: Option<String> = row.get("localUri")?;
     let total_ms: i64 = match row.get_ref("totalPlayTime")? {
-        rusqlite::types::ValueRef::Real(f) => (f * 1000.0) as i64,
+        // REAL only in legacy tables (REAL-declared column), already converted to ms at open.
+        rusqlite::types::ValueRef::Real(f) => f as i64,
         v => v.as_i64_or_null()?.unwrap_or(0),
     };
     let in_library: Option<i64> = row.get("inLibrary")?;
@@ -497,10 +498,15 @@ impl Db {
         }
         // Older untested desktop builds stored play time as REAL seconds;
         // Room (and this build) store INTEGER milliseconds.
-        conn.execute_batch(
-            "UPDATE song SET totalPlayTime = CAST(totalPlayTime * 1000 AS INTEGER) WHERE typeof(totalPlayTime) = 'real';
-             UPDATE event SET playTime = CAST(playTime * 1000 AS INTEGER) WHERE typeof(playTime) = 'real';",
-        )?;
+        // Only once (before user_version reaches 43): those old tables declare the
+        // columns REAL, so converted values stay REAL and re-running this on every
+        // open multiplied play times by 1000 per launch until they saturated.
+        if version < SCHEMA_VERSION {
+            conn.execute_batch(
+                "UPDATE song SET totalPlayTime = CAST(totalPlayTime * 1000 AS INTEGER) WHERE typeof(totalPlayTime) = 'real';
+                 UPDATE event SET playTime = CAST(playTime * 1000 AS INTEGER) WHERE typeof(playTime) = 'real';",
+            )?;
+        }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self { conn: Mutex::new(conn) })
     }

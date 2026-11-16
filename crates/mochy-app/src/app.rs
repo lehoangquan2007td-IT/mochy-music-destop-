@@ -1454,7 +1454,7 @@ impl MochyApp {
     fn run_shots(&mut self, ctx: &egui::Context) {
         let Some(sr) = self.shots.as_mut() else { return };
         // (name, route, seconds to wait before the shot — Home waits for network/art)
-        let steps: [(&str, Route, f32); 15] = [
+        let steps: [(&str, Route, f32); 16] = [
             ("home", Route::Home, 12.0),
             ("search", Route::Search, 3.0),
             ("library", Route::Library(LibTab::History), 3.0),
@@ -1471,6 +1471,7 @@ impl MochyApp {
             ("lib_artists", Route::Library(LibTab::Artists), 3.0),
             ("lib_recent", Route::Library(LibTab::RecentlyAdded), 3.0),
             ("stats", Route::Stats, 4.0),
+            ("recap", Route::Stats, 3.0),
         ];
         ctx.request_repaint_after(Duration::from_millis(100));
         if sr.step >= steps.len() {
@@ -1496,6 +1497,9 @@ impl MochyApp {
         }
         if self.nav.current() != &route {
             self.nav.go(route);
+        }
+        if name == "recap" && self.browse.stats.recap.is_none() {
+            self.browse.stats.recap = Some(crate::browse::RecapUi { page: 1, page_started: Instant::now() });
         }
         let t = sr.started.elapsed().as_secs_f32();
         if !sr.taken && t >= wait {
