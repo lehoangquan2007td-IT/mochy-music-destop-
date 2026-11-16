@@ -14,6 +14,7 @@ mod controller;
 mod db;
 mod downloads;
 mod images;
+mod integrations;
 mod local_scan;
 mod logging;
 mod lyrics;

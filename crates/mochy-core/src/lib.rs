@@ -8,6 +8,7 @@ pub mod autoeq;
 pub mod eq;
 pub mod error;
 pub mod ids;
+pub mod integrations;
 pub mod models;
 pub mod player_look;
 pub mod settings;

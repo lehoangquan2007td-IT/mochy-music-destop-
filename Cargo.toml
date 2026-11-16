@@ -8,6 +8,8 @@ members = [
     "crates/mochy-storage",
     "crates/mochy-app",
     "crates/mochy-download",
+    "crates/mochy-integrations",
+    "crates/mochy-importer",
 ]
 
 [workspace.package]

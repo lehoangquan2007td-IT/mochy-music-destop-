@@ -409,4 +409,7 @@ pub struct AppSettings {
     pub downloads: crate::download_settings::DownloadSettings,
     /// Now Playing styles and look (desktop port of the player customisation).
     pub player: crate::player_look::PlayerLook,
+    /// Discord presence + scrobbling (see `crate::integrations`).
+    #[serde(default)]
+    pub integrations: crate::integrations::IntegrationSettings,
 }

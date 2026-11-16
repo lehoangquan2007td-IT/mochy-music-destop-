@@ -125,6 +125,8 @@ pub struct MochyApp {
     copy_request: Option<String>,
     /// `MOCHY_SHOTS=<dir>`: visual-check automation (screenshot pages, then exit).
     shots: Option<ShotRunner>,
+    /// Discord presence, scrobbling, playlist importer.
+    integrations: crate::integrations::Integrations,
 }
 
 impl MochyApp {
@@ -242,6 +244,7 @@ impl MochyApp {
             window_seen,
             started: Instant::now(),
             copy_request: None,
+            integrations: crate::integrations::Integrations::new(svc.clone()),
             shots: std::env::var_os("MOCHY_SHOTS").map(|d| ShotRunner { dir: d.into(), started: std::time::Instant::now(), step: 0, taken: false }),
             svc,
         };
@@ -606,6 +609,7 @@ impl MochyApp {
             }
             Action::ToggleLike(s) => {
                 let like = !self.data.liked_ids.contains(&s.id);
+                self.integrations.on_like(&s, like);
                 if like {
                     self.data.liked_ids.insert(s.id.clone());
                 } else {
@@ -1331,6 +1335,9 @@ impl eframe::App for MochyApp {
         self.player.tick();
         self.track_change_housekeeping();
         self.media_housekeeping();
+        if self.integrations.frame(ctx, &self.player, &mut self.settings) {
+            self.refresh_library();
+        }
         if let Some(q) = self.search.due_suggestions() {
             let q2 = q.clone();
             self.svc.ytm_call("suggestions", move |c| async move { c.suggestions(&q2).await }, move |r| AppMsg::Suggestions {
@@ -1367,6 +1374,7 @@ impl eframe::App for MochyApp {
             }
             self.refresh_library();
         }
+        self.integrations.ui(&ctx);
         self.draw_toasts(&ctx);
         if let Some(t) = self.copy_request.take() {
             ctx.copy_text(t);
