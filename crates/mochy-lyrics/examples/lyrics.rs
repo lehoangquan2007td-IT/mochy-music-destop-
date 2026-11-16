@@ -54,7 +54,13 @@ fn print_lines(l: &Lyrics, n: usize) {
 
 /// Romanization (always, when the script has one) and translation (`TRANSLATE=<lang>`) of the
 /// whole song: prints how many lines got a reading / translation and their sizes, not the text.
-async fn extras(l: &Lyrics, http: &reqwest::Client) {
+async fn extras(l: &Lyrics, http: &reqwest::Client, video_id: Option<&str>) {
+    if let (SyncKind::Plain, Some(vid)) = (l.sync, video_id) {
+        match mochy_lyrics::autosync::sync_plain_to_video(l, vid, None).await {
+            Some(s) => println!("--- plain lyrics timed from captions: {} lines, first at {:.2}s, last at {:.2}s", s.lines.len(), s.lines[0].time, s.lines.last().map(|x| x.time).unwrap_or(0.0)),
+            None => println!("--- plain lyrics could not be timed from captions"),
+        }
+    }
     let texts: Vec<&str> = l.lines.iter().map(|x| x.text.as_str()).collect();
     if let Some(lang) = mochy_lyrics::romanize::song_language(&texts.join(" ")) {
         let r = mochy_lyrics::romanize::romanize_song(&texts, |_| true);
@@ -152,7 +158,7 @@ async fn main() {
                     println!("{:<14} OK {} ({dt:.1}s){enabled}", p.id(), summary(&l));
                     if providers.len() == 1 {
                         print_lines(&l, 12);
-                        extras(&l, &http).await;
+                        extras(&l, &http, meta.video_id.as_deref()).await;
                         println!("--- raw payload: {} chars", raw.chars().count());
                     } else {
                         print_lines(&l, 2);
@@ -177,7 +183,7 @@ async fn main() {
                     t0.elapsed().as_secs_f32()
                 );
                 print_lines(&l, 4);
-                extras(&l, &http).await;
+                extras(&l, &http, meta.video_id.as_deref()).await;
                 assert!(l.sync != SyncKind::None);
             }
             None => println!("== fetch(): no lyrics ({:.1}s)", t0.elapsed().as_secs_f32()),

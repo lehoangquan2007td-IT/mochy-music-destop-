@@ -1,5 +1,6 @@
 //! Lyrics loading for the current track: lyrics embedded in a local file (tags / sidecar
-//! `.lrc`, Android reads these first, offline too) → DB cache → providers → DB cache.
+//! `.lrc`, Android reads these first, offline too) → DB cache → providers (plain results are
+//! timed from the video's captions when possible) → DB cache.
 //! Every call into `mochy_lyrics` runs in its own spawned task so a panic
 //! there (e.g. an unimplemented provider) becomes `LyricsState::Error`
 //! instead of taking the app down.
@@ -71,8 +72,26 @@ pub async fn load(svc: Services, song: Song, order: Vec<ProviderId>) -> LyricsSt
     } else {
         None
     };
+    let video_id = song.video_id.clone();
     let cfg = FetchConfig { order, ytm, ..FetchConfig::default() };
-    let fetched = guarded(async move { mochy_lyrics::fetch(&meta, &cfg, &http).await }).await;
+    let fetched = guarded(async move {
+        let found = mochy_lyrics::fetch(&meta, &cfg, &http).await;
+        // Untimed lyrics + a video: time them from the video's captions when they line up
+        // (mochy_lyrics::autosync, after Android's CaptionAligner).
+        match (found, video_id) {
+            (Some(l), Some(vid)) if l.sync == SyncKind::Plain => {
+                match mochy_lyrics::autosync::sync_plain_to_video(&l, &vid, cfg.ytm.as_ref()).await {
+                    Some(synced) => {
+                        tracing::info!(lines = synced.lines.len(), "plain lyrics timed from captions");
+                        Some(synced)
+                    }
+                    None => Some(l),
+                }
+            }
+            (found, _) => found,
+        }
+    })
+    .await;
     match fetched {
         Ok(Some(lyrics)) => {
             // 3. Store (best effort; serialisation runs guarded too).
