@@ -37,6 +37,7 @@ mod spectrum;
 
 pub mod dsp;
 pub mod http_source;
+pub mod output_info;
 
 pub use decoder::{DecodeSession, RateParams, RatePipeline, ReplayGainTags, SourceInfo};
 pub use spectrum::SpectrumAnalyzer;

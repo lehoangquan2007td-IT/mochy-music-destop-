@@ -4,10 +4,12 @@
 //!
 //! Spec of record: `docs/PORT_SPEC.md` (extracted from the Android sources).
 
+pub mod autoeq;
 pub mod eq;
 pub mod error;
 pub mod ids;
 pub mod models;
+pub mod player_look;
 pub mod settings;
 
 pub use error::{CoreError, Result};
