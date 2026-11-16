@@ -136,6 +136,8 @@ impl Engine {
         }
         let interrupted = self.deferred.is_some();
         if self.fade.active() && self.audible() && !interrupted {
+            // a new song is coming: nothing may run on into the old next one meanwhile
+            self.drop_next();
             let len = self.fade.skip_out();
             self.fade_to(0.0, len, false);
             self.deferred = Some((Instant::now() + Duration::from_secs_f32(len) + SETTLE, Deferred::Load { source, info, autoplay }));
@@ -355,6 +357,9 @@ impl Engine {
     }
 
     pub(super) fn preload_next(&mut self, next: NextTrack) {
+        if matches!(self.deferred, Some((_, Deferred::Load { .. }))) {
+            return;
+        }
         if self.next.as_ref().is_some_and(|n| n.shared.switched.load(Ordering::Acquire)) {
             self.promote();
         }

@@ -24,6 +24,9 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::Value;
 use thiserror::Error;
 
+mod song_tuning;
+pub use song_tuning::SongTuningRow;
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("sqlite: {0}")]

@@ -48,6 +48,8 @@ pub enum Action {
     ToggleSidePanel(crate::pages::SideTab),
     /// Adjust the current song's lyrics offset (ms delta).
     LyricsOffset(i32),
+    /// Sleep timer / per-song speed & pitch (`ui/transitions_ui.rs`).
+    Transitions(crate::ui::transitions_ui::TransitionsAction),
 }
 
 /// Remote/async data slot.

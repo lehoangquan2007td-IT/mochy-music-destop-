@@ -16,6 +16,9 @@ use mochy_innertube::StreamResult;
 use crate::queue::Queue;
 use crate::services::{AppMsg, Services};
 
+mod transitions;
+pub use transitions::{TransitionSnapshot, apply_transition_settings, smoke_transition_settings};
+
 /// "Previous" restarts the track when the position is past this (spec §4.1).
 pub const PREV_RESTART_SECS: f64 = 3.0;
 const PREFETCH_AFTER_SECS: f64 = 5.0;
@@ -58,6 +61,8 @@ pub struct CtlCfg {
     pub replay_gain: bool,
     pub replay_gain_preamp: f32,
     pub persistent_queue: bool,
+    /// Gapless albums, sleep-timer fade (see `controller/transitions.rs`).
+    pub transitions: mochy_core::settings::TransitionSettings,
 }
 
 impl CtlCfg {
@@ -69,6 +74,7 @@ impl CtlCfg {
             replay_gain: s.audio_lab.normalize_replay_gain,
             replay_gain_preamp: s.audio_lab.normalize_preamp_db,
             persistent_queue: s.misc.persistent_queue,
+            transitions: s.transitions.clone(),
         }
     }
 }
@@ -100,6 +106,8 @@ pub struct PlayerController {
     queue_dirty: Option<Instant>,
     /// Current loudness gain applied (for display / debugging).
     pub applied_gain_db: Option<f32>,
+    /// Preloaded next track, sleep timer, per-song tuning.
+    pub tx: transitions::TransitionState,
 }
 
 pub fn song_from_queue_item(q: &QueueItem) -> Song {
@@ -162,6 +170,7 @@ impl PlayerController {
             fail_streak: 0,
             queue_dirty: None,
             applied_gain_db: None,
+            tx: Default::default(),
         }
     }
 
@@ -380,6 +389,9 @@ impl PlayerController {
     /// Load the queue's current entry (resolving the stream if needed).
     fn start_current(&mut self, autoplay: bool) {
         self.flush_play_record();
+        if self.tx_has_preload() {
+            self.send(Command::ClearNext);
+        }
         self.generation += 1;
         self.format = None;
         self.pos = 0.0;
@@ -478,6 +490,7 @@ impl PlayerController {
                 self.awaiting_engine = true;
                 tracing::info!(title = %self.current().map(|s| s.title.as_str()).unwrap_or(""), "loading track");
                 self.send(Command::Load { source: p.source, info, autoplay: self.want_play });
+                self.send_song_tuning();
             }
             Err(e) => {
                 tracing::warn!("track failed to resolve: {e}");
@@ -560,6 +573,7 @@ impl PlayerController {
                     self.maybe_prefetch();
                     self.maybe_extend_with_radio();
                 }
+                self.maybe_preload_next();
             }
             Event::TrackInfo { codec, sample_rate, channels, bits_per_sample } => {
                 let mut s = format!("{} {:.1} kHz", codec.to_uppercase(), sample_rate as f32 / 1000.0);
@@ -574,6 +588,7 @@ impl PlayerController {
                     _ => s,
                 });
             }
+            Event::NextStarted { token } => self.on_next_started(token),
             #[allow(unreachable_patterns)]
             _ => {}
         }
@@ -581,6 +596,7 @@ impl PlayerController {
 
     fn on_track_end(&mut self) {
         let finished_uid = self.loaded_uid;
+        let pause_after = self.take_sleep_end_of_song();
         self.flush_play_record();
         match self.queue.advance(true) {
             Some(_) => {
@@ -588,7 +604,7 @@ impl PlayerController {
                     tracing::debug!("repeat one");
                 }
                 self.mark_queue_dirty();
-                self.start_current(true);
+                self.start_current(!pause_after);
             }
             None => {
                 self.state = PlayState::Ended;
@@ -746,6 +762,7 @@ impl PlayerController {
 
     /// Periodic housekeeping (debounced queue save).
     pub fn tick(&mut self) {
+        self.tick_transitions();
         if let Some(t) = self.queue_dirty
             && t.elapsed() >= QUEUE_SAVE_DEBOUNCE
         {
