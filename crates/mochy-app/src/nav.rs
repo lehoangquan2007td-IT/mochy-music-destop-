@@ -12,13 +12,13 @@ pub enum LibTab {
 impl LibTab {
     pub const ALL: [LibTab; 5] = [LibTab::Liked, LibTab::Playlists, LibTab::History, LibTab::MostPlayed, LibTab::Local];
     pub fn label(self) -> &'static str {
-        match self {
+        crate::ui::i18n::tr(match self {
             LibTab::Liked => "Liked songs",
             LibTab::Playlists => "Playlists",
             LibTab::History => "History",
             LibTab::MostPlayed => "Most played",
             LibTab::Local => "Local files",
-        }
+        })
     }
 }
 

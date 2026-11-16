@@ -13,6 +13,7 @@ use mochy_storage::SettingsStore;
 
 use crate::actions::{Action, Ctx, LoadState};
 use crate::controller::{CtlCfg, PlayState, PlayerController, apply_audio_lab};
+use crate::ui::i18n::tr;
 use crate::db::DbWorker;
 use crate::images::{ImageCache, THUMB_PX};
 use crate::media_keys::{MediaKey, MediaKeys};
@@ -479,19 +480,19 @@ impl MochyApp {
             AppMsg::Scan(m) => match m {
                 ScanMsg::Started(dir) => {
                     self.lib.scanning = true;
-                    self.lib.scan_status = Some(format!("Scanning {}…", dir.display()));
+                    self.lib.scan_status = Some(crate::ui::i18n::scan_dir(&dir.display().to_string()));
                 }
                 ScanMsg::Progress { scanned, added } => {
-                    self.lib.scan_status = Some(format!("Scanned {scanned} files, {added} added…"));
+                    self.lib.scan_status = Some(crate::ui::i18n::scan_progress(scanned, added));
                 }
                 ScanMsg::Done { added } => {
                     self.lib.scanning = false;
-                    self.lib.scan_status = Some(format!("Added {added} songs"));
+                    self.lib.scan_status = Some(crate::ui::i18n::scan_added(added));
                     self.refresh_library();
                 }
                 ScanMsg::Cancelled => {
                     self.lib.scanning = false;
-                    self.lib.scan_status = Some("Scan cancelled".into());
+                    self.lib.scan_status = Some(tr("Scan cancelled").into());
                     self.refresh_library();
                 }
             },
@@ -591,11 +592,11 @@ impl MochyApp {
                 }
             }
             Action::PlayNext(s) => {
-                self.toast(format!("Playing next: {}", s.title));
+                self.toast(format!("{}: {}", tr("Playing next"), s.title));
                 self.player.play_next(s);
             }
             Action::AddToQueue(v) => {
-                self.toast(if v.len() == 1 { format!("Added to queue: {}", v[0].title) } else { format!("Added {} songs to queue", v.len()) });
+                self.toast(if v.len() == 1 { format!("{}: {}", tr("Added to queue"), v[0].title) } else { crate::ui::i18n::added_to_queue(v.len()) });
                 self.player.add_to_queue(v);
             }
             Action::ToggleLike(s) => {
@@ -620,7 +621,7 @@ impl MochyApp {
             }
             Action::AddToPlaylist { playlist_id, song } => {
                 let name = self.data.playlists.iter().find(|p| p.id == playlist_id).map(|p| p.name.clone()).unwrap_or_default();
-                self.toast(format!("Added to {name}"));
+                self.toast(format!("{} {name}", tr("Added to")));
                 let bus = self.svc.bus.clone();
                 self.svc.db.run(move |db| {
                     crate::db::ensure_song(db, &song);
@@ -661,7 +662,7 @@ impl MochyApp {
             Action::Seek(t) => self.player.seek(t),
             Action::CopyText(t) => {
                 self.copy_request = Some(t);
-                self.toast("Link copied");
+                self.toast(tr("Link copied"));
             }
             Action::Toggle => self.player.toggle(),
             Action::Next => self.player.next(),
@@ -717,9 +718,9 @@ impl MochyApp {
         let mut close = false;
         let mut confirm = false;
         let title = match dialog {
-            Dialog::NewPlaylist { .. } => "New playlist",
-            Dialog::Rename { .. } => "Rename playlist",
-            Dialog::ConfirmDelete { .. } => "Delete playlist",
+            Dialog::NewPlaylist { .. } => tr("New playlist"),
+            Dialog::Rename { .. } => tr("Rename playlist"),
+            Dialog::ConfirmDelete { .. } => tr("Delete playlist"),
         };
         let modal = egui::Modal::new(Id::unique("mochy_dialog")).show(ctx, |ui| {
             ui.set_width(340.0);
@@ -727,27 +728,27 @@ impl MochyApp {
             ui.add_space(8.0);
             match dialog {
                 Dialog::NewPlaylist { name, .. } | Dialog::Rename { name, .. } => {
-                    let r = ui.add(egui::TextEdit::singleline(name).hint_text("Playlist name").desired_width(f32::INFINITY));
+                    let r = ui.add(egui::TextEdit::singleline(name).hint_text(tr("Playlist name")).desired_width(f32::INFINITY));
                     r.request_focus();
                     if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !name.trim().is_empty() {
                         confirm = true;
                     }
                 }
                 Dialog::ConfirmDelete { name, .. } => {
-                    ui.label(format!("Delete \"{name}\"? This can't be undone."));
+                    ui.label(crate::ui::i18n::delete_confirm(name));
                 }
             }
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 let ok = match dialog {
-                    Dialog::ConfirmDelete { .. } => "Delete",
-                    Dialog::Rename { .. } => "Rename",
-                    Dialog::NewPlaylist { .. } => "Create",
+                    Dialog::ConfirmDelete { .. } => tr("Delete"),
+                    Dialog::Rename { .. } => tr("Rename"),
+                    Dialog::NewPlaylist { .. } => tr("Create"),
                 };
                 if ui.button(ok).clicked() {
                     confirm = true;
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr("Cancel")).clicked() {
                     close = true;
                 }
             });
@@ -764,7 +765,7 @@ impl MochyApp {
                     if name.is_empty() {
                         return;
                     }
-                    self.toast(format!("Created playlist {name}"));
+                    self.toast(format!("{} {name}", tr("Created playlist")));
                     self.svc.db.run(move |db| {
                         if let Some(id) = crate::db::log_err("create_playlist", db.create_playlist(&name))
                             && let Some(song) = add
@@ -790,7 +791,7 @@ impl MochyApp {
                     });
                 }
                 Dialog::ConfirmDelete { id, name } => {
-                    self.toast(format!("Deleted {name}"));
+                    self.toast(format!("{} {name}", tr("Deleted")));
                     if matches!(self.nav.current(), Route::LocalPlaylist(x) if *x == id) {
                         self.nav.go(Route::Library(LibTab::Playlists));
                     }
@@ -1337,6 +1338,8 @@ impl eframe::App for MochyApp {
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // UI language, pushed before drawing so every tr() this frame agrees.
+        crate::ui::i18n::set_lang(self.settings.appearance.language);
         self.images.begin_frame();
         self.shortcuts(&ctx);
         self.window_housekeeping(&ctx);

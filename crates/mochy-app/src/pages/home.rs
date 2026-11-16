@@ -5,6 +5,7 @@ use egui::{RichText, Ui};
 
 use super::Data;
 use crate::actions::{Ctx, LoadState};
+use crate::ui::i18n::tr;
 use crate::widgets::{self, TEXT_DIM};
 
 /// Returns `true` when the user asked to retry loading the home feed.
@@ -12,13 +13,13 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, data: &Data) -> bool {
     let mut retry = false;
     widgets::page_title(ui, greeting());
 
-    widgets::song_card_row(ui, cx, "Recently played", &data.history, "recent", true);
-    widgets::song_card_row(ui, cx, "Most played", &data.most_played, "most", true);
+    widgets::song_card_row(ui, cx, tr("Recently played"), &data.history, "recent", true);
+    widgets::song_card_row(ui, cx, tr("Most played"), &data.most_played, "most", true);
 
     match &data.home {
         None | Some(LoadState::Loading) => {
             ui.add_space(12.0);
-            widgets::loading(ui, "Loading YouTube Music…");
+            widgets::loading(ui, tr("Loading YouTube Music…"));
         }
         Some(LoadState::Failed(e)) => {
             ui.add_space(12.0);
@@ -26,8 +27,8 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, data: &Data) -> bool {
         }
         Some(LoadState::Ready(shelves)) => {
             if shelves.is_empty() {
-                ui.label(RichText::new("YouTube Music returned no shelves.").color(TEXT_DIM));
-                retry = ui.button("Reload").clicked();
+                ui.label(RichText::new(tr("YouTube Music returned no shelves.")).color(TEXT_DIM));
+                retry = ui.button(tr("Reload")).clicked();
             }
             for (i, shelf) in shelves.iter().enumerate() {
                 if shelf.items.is_empty() {

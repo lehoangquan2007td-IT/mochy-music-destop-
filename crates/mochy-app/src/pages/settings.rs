@@ -3,9 +3,10 @@
 use std::path::PathBuf;
 
 use egui::{Color32, RichText, Ui};
-use mochy_core::settings::{AppSettings, AudioQuality};
+use mochy_core::settings::{AppSettings, AudioQuality, Language};
 use mochy_lyrics::ProviderId;
 
+use crate::ui::i18n::{self, tr};
 use crate::widgets::{self, TEXT, TEXT_DIM};
 
 pub enum SettingsEvent {
@@ -38,7 +39,7 @@ fn hint(ui: &mut Ui, text: &str) {
 }
 
 fn quality_label(q: AudioQuality) -> &'static str {
-    match q {
+    tr(match q {
         AudioQuality::Auto => "Auto",
         AudioQuality::Low => "Low",
         AudioQuality::Medium => "Medium",
@@ -46,45 +47,60 @@ fn quality_label(q: AudioQuality) -> &'static str {
         AudioQuality::Lossless => "Lossless",
         AudioQuality::HiResLossless => "Hi-Res Lossless",
         AudioQuality::DolbyAtmos => "Dolby Atmos",
-    }
+    })
+}
+
+/// Language picker: options stay in their own language (standard practice).
+fn language_picker(ui: &mut Ui, s: &mut AppSettings) {
+    ui.horizontal(|ui| {
+        ui.label(tr("Language"));
+        let current = match s.appearance.language {
+            Language::En => "English",
+            Language::Vi => "Tiếng Việt",
+        };
+        egui::ComboBox::from_id_salt("ui_language").selected_text(current).show_ui(ui, |ui| {
+            ui.selectable_value(&mut s.appearance.language, Language::En, "English");
+            ui.selectable_value(&mut s.appearance.language, Language::Vi, "Tiếng Việt");
+        });
+    });
 }
 
 pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEvent> {
     let mut ev = Vec::new();
-    widgets::page_title(ui, "Settings");
+    widgets::page_title(ui, tr("Settings"));
 
     // ---- Playback ----------------------------------------------------------
-    group(ui, "Playback", |ui| {
+    group(ui, tr("Playback"), |ui| {
         ui.horizontal(|ui| {
-            ui.label("Audio quality");
+            ui.label(tr("Audio quality"));
             egui::ComboBox::from_id_salt("quality").selected_text(quality_label(s.playback.audio_quality)).show_ui(ui, |ui| {
                 for q in [AudioQuality::Auto, AudioQuality::Low, AudioQuality::Medium, AudioQuality::High] {
                     ui.selectable_value(&mut s.playback.audio_quality, q, quality_label(q));
                 }
             });
         });
-        ui.checkbox(&mut s.playback.audio_normalization, "Normalize volume (YouTube loudness)");
-        ui.checkbox(&mut s.audio_lab.normalize_replay_gain, "Use ReplayGain tags for local files");
-        ui.checkbox(&mut s.playback.auto_skip_next_on_error, "Skip to the next song when a stream fails");
-        ui.checkbox(&mut s.playback.skip_silence, "Skip silence");
-        hint(ui, "Skip silence is saved but not yet applied by the desktop audio engine.");
-        ui.checkbox(&mut s.misc.persistent_queue, "Restore the queue on startup");
+        ui.checkbox(&mut s.playback.audio_normalization, tr("Normalize volume (YouTube loudness)"));
+        ui.checkbox(&mut s.audio_lab.normalize_replay_gain, tr("Use ReplayGain tags for local files"));
+        ui.checkbox(&mut s.playback.auto_skip_next_on_error, tr("Skip to the next song when a stream fails"));
+        ui.checkbox(&mut s.playback.skip_silence, tr("Skip silence"));
+        hint(ui, tr("Skip silence is saved but not yet applied by the desktop audio engine."));
+        ui.checkbox(&mut s.misc.persistent_queue, tr("Restore the queue on startup"));
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label("Output device");
+            ui.label(tr("Output device"));
             let current = s.playback.output_device.clone();
-            let label = current.clone().unwrap_or_else(|| "System default".into());
+            let label = current.clone().unwrap_or_else(|| tr("System default").into());
             egui::ComboBox::from_id_salt("outdev").selected_text(label).width(280.0).show_ui(ui, |ui| {
-                if ui.selectable_label(current.is_none(), "System default").clicked() && current.is_some() {
+                if ui.selectable_label(current.is_none(), tr("System default")).clicked() && current.is_some() {
                     s.playback.output_device = None;
                     ev.push(SettingsEvent::SetOutputDevice(None));
                 }
                 match sc.devices {
                     None => {
-                        ui.label("Loading devices…");
+                        ui.label(tr("Loading devices…"));
                     }
                     Some(list) if list.is_empty() => {
-                        ui.label(RichText::new("No devices reported by the engine").color(TEXT_DIM));
+                        ui.label(RichText::new(tr("No devices reported by the engine")).color(TEXT_DIM));
                     }
                     Some(list) => {
                         for d in list {
@@ -97,19 +113,20 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
                     }
                 }
             });
-            if ui.button("Refresh").clicked() {
+            if ui.button(tr("Refresh")).clicked() {
                 ev.push(SettingsEvent::RefreshDevices);
             }
         });
     });
 
     // ---- Appearance ----------------------------------------------------------
-    group(ui, "Appearance", |ui| {
-        ui.checkbox(&mut s.appearance.dynamic_theme, "Dynamic theme (accent from artwork)");
+    group(ui, tr("Appearance"), |ui| {
+        language_picker(ui, s);
+        ui.checkbox(&mut s.appearance.dynamic_theme, tr("Dynamic theme (accent from artwork)"));
         ui.horizontal(|ui| {
             let mut custom = s.appearance.selected_theme_color.is_some();
             ui.add_enabled_ui(!s.appearance.dynamic_theme, |ui| {
-                if ui.checkbox(&mut custom, "Custom accent color").changed() {
+                if ui.checkbox(&mut custom, tr("Custom accent color")).changed() {
                     s.appearance.selected_theme_color = if custom { Some(0x8E8E8E) } else { None };
                 }
                 if let Some(c) = s.appearance.selected_theme_color {
@@ -121,48 +138,48 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
             });
         });
         if s.appearance.dynamic_theme {
-            hint(ui, "Turn off the dynamic theme to pick a fixed accent color.");
+            hint(ui, tr("Turn off the dynamic theme to pick a fixed accent color."));
         }
-        ui.checkbox(&mut s.appearance.pure_black, "Pure black background");
+        ui.checkbox(&mut s.appearance.pure_black, tr("Pure black background"));
         ui.horizontal(|ui| {
-            ui.label("Cover corner radius");
+            ui.label(tr("Cover corner radius"));
             ui.add(egui::Slider::new(&mut s.appearance.thumbnail_corner_radius, 0.0..=32.0).suffix(" px"));
         });
     });
 
     // ---- Lyrics --------------------------------------------------------------
-    group(ui, "Lyrics", |ui| {
-        ui.checkbox(&mut s.lyrics.show, "Show lyrics");
+    group(ui, tr("Lyrics"), |ui| {
+        ui.checkbox(&mut s.lyrics.show, tr("Show lyrics"));
         ui.horizontal(|ui| {
-            ui.label("Text size");
+            ui.label(tr("Text size"));
             ui.add(egui::Slider::new(&mut s.lyrics.text_size, 0.6..=2.0).step_by(0.05).suffix("×"));
         });
-        ui.label(RichText::new("Providers (top = highest priority)").color(TEXT));
+        ui.label(RichText::new(tr("Providers (top = highest priority)")).color(TEXT));
         provider_editor(ui, s);
     });
 
     // ---- Storage ---------------------------------------------------------------
-    group(ui, "Storage", |ui| {
+    group(ui, tr("Storage"), |ui| {
         let rows = [
-            ("Data", mochy_storage::data_dir()),
-            ("Database", mochy_storage::db_path()),
-            ("Cache", mochy_storage::cache_dir()),
-            ("Artwork cache", mochy_storage::art_cache_dir()),
+            (tr("Data"), mochy_storage::data_dir()),
+            (tr("Database"), mochy_storage::db_path()),
+            (tr("Cache"), mochy_storage::cache_dir()),
+            (tr("Artwork cache"), mochy_storage::art_cache_dir()),
         ];
         egui::Grid::new("paths").num_columns(3).spacing([12.0, 8.0]).show(ui, |ui| {
             for (name, p) in rows {
                 ui.label(RichText::new(name).color(TEXT_DIM));
                 ui.label(RichText::new(p.display().to_string()).monospace().size(12.0));
                 let dir = if p.is_dir() { p.clone() } else { p.parent().map(|x| x.to_path_buf()).unwrap_or(p.clone()) };
-                if ui.small_button("Open").clicked() {
+                if ui.small_button(tr("Open")).clicked() {
                     ev.push(SettingsEvent::OpenDir(dir));
                 }
                 ui.end_row();
             }
             if let Some(l) = sc.log_file {
-                ui.label(RichText::new("Log file").color(TEXT_DIM));
+                ui.label(RichText::new(tr("Log file")).color(TEXT_DIM));
                 ui.label(RichText::new(l.display().to_string()).monospace().size(12.0));
-                if ui.small_button("Open").clicked()
+                if ui.small_button(tr("Open")).clicked()
                     && let Some(d) = l.parent()
                 {
                     ev.push(SettingsEvent::OpenDir(d.to_path_buf()));
@@ -170,29 +187,29 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
                 ui.end_row();
             }
         });
-        if ui.button("Clear artwork cache").clicked() {
+        if ui.button(tr("Clear artwork cache")).clicked() {
             ev.push(SettingsEvent::ClearArtCache);
         }
         if let Some(e) = sc.db_error {
             ui.label(RichText::new(format!("Database error (using a temporary in-memory DB): {e}")).color(Color32::from_rgb(0xFF, 0x8A, 0x8A)));
         }
         match sc.ytm_status {
-            Some(Ok(())) => hint(ui, "YouTube Music: connected"),
+            Some(Ok(())) => hint(ui, tr("YouTube Music: connected")),
             Some(Err(e)) => {
                 ui.label(RichText::new(format!("YouTube Music: {e}")).color(Color32::from_rgb(0xFF, 0x8A, 0x8A)));
             }
-            None => hint(ui, "YouTube Music: connecting…"),
+            None => hint(ui, tr("YouTube Music: connecting…")),
         }
     });
 
     // ---- About -------------------------------------------------------------------
-    group(ui, "About", |ui| {
+    group(ui, tr("About"), |ui| {
         ui.label(RichText::new(format!("Mochy Music desktop {}", env!("CARGO_PKG_VERSION"))).strong());
-        ui.label("A desktop port of the Mochy Music Android app, written in Rust (egui).");
+        ui.label(tr("A desktop port of the Mochy Music Android app, written in Rust (egui)."));
         ui.horizontal_wrapped(|ui| {
-            ui.label("Based on the original");
+            ui.label(tr("Based on the original"));
             ui.hyperlink_to("Mochy Music", "https://github.com/realidkroo/Mochy-Music");
-            ui.label("project (a Metrolist fork) — all credit for the design and features goes to its authors.");
+            ui.label(tr("project (a Metrolist fork) — all credit for the design and features goes to its authors."));
         });
         ui.label(
             "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General \
@@ -200,7 +217,7 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
              option) any later version. It is distributed WITHOUT ANY WARRANTY; see the GNU GPL v3 for details.",
         );
         ui.hyperlink_to("GNU GPL v3", "https://www.gnu.org/licenses/gpl-3.0.html");
-        hint(ui, "Not affiliated with Google or YouTube.");
+        hint(ui, tr("Not affiliated with Google or YouTube."));
     });
     ui.add_space(30.0);
     ev

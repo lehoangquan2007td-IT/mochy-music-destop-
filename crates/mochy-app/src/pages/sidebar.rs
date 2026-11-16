@@ -5,6 +5,7 @@ use mochy_core::models::Playlist;
 
 use crate::actions::{Action, Ctx};
 use crate::nav::{LibTab, Route};
+use crate::ui::i18n::tr;
 use crate::widgets::{self, TEXT, TEXT_DIM, icons, icons::Icon};
 
 fn nav_item(ui: &mut Ui, icon: Icon, label: &str, selected: bool, accent: Color32) -> egui::Response {
@@ -42,11 +43,11 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, route: &Route, playlists: &[Playlist], lo
 
     let sec = route.section();
     let items = [
-        (Icon::Home, "Home", Route::Home, 0u8),
-        (Icon::Search, "Search", Route::Search, 1),
-        (Icon::Library, "Library", Route::Library(LibTab::Liked), 2),
+        (Icon::Home, tr("Home"), Route::Home, 0u8),
+        (Icon::Search, tr("Search"), Route::Search, 1),
+        (Icon::Library, tr("Library"), Route::Library(LibTab::Liked), 2),
         (Icon::AudioLab, "Audio Lab", Route::AudioLab, 3),
-        (Icon::Settings, "Settings", Route::Settings, 4),
+        (Icon::Settings, tr("Settings"), Route::Settings, 4),
     ];
     for (icon, label, r, s) in items {
         let selected = sec == s && !matches!(route, Route::LocalPlaylist(_));
@@ -60,19 +61,19 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, route: &Route, playlists: &[Playlist], lo
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.add_space(8.0);
-        ui.label(egui::RichText::new("PLAYLISTS").size(11.5).color(TEXT_DIM));
+        ui.label(egui::RichText::new(tr("PLAYLISTS")).size(11.5).color(TEXT_DIM));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icons::icon_button(ui, Icon::Plus, 24.0, false, cx.accent).on_hover_text("New playlist").clicked() {
+            if icons::icon_button(ui, Icon::Plus, 24.0, false, cx.accent).on_hover_text(tr("New playlist")).clicked() {
                 cx.act(Action::NewPlaylist(None));
             }
         });
     });
     ui.add_space(4.0);
     egui::ScrollArea::vertical().id_salt("sidebar_playlists").auto_shrink([false, false]).show(ui, |ui| {
-        if nav_item(ui, Icon::HeartFilled, "Liked songs", matches!(route, Route::Library(LibTab::Liked)), cx.accent).clicked() {
+        if nav_item(ui, Icon::HeartFilled, tr("Liked songs"), matches!(route, Route::Library(LibTab::Liked)), cx.accent).clicked() {
             cx.act(Action::Navigate(Route::Library(LibTab::Liked)));
         }
-        if nav_item(ui, Icon::Folder, "Local files", matches!(route, Route::Library(LibTab::Local)), cx.accent).clicked() {
+        if nav_item(ui, Icon::Folder, tr("Local files"), matches!(route, Route::Library(LibTab::Local)), cx.accent).clicked() {
             cx.act(Action::Navigate(Route::Library(LibTab::Local)));
         }
         for p in playlists {
@@ -82,11 +83,11 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, route: &Route, playlists: &[Playlist], lo
                 cx.act(Action::Navigate(Route::LocalPlaylist(p.id.clone())));
             }
             resp.context_menu(|ui| {
-                if ui.button("Rename…").clicked() {
+                if ui.button(tr("Rename…")).clicked() {
                     cx.act(Action::RenamePlaylist(p.id.clone()));
                     ui.close();
                 }
-                if ui.button("Delete…").clicked() {
+                if ui.button(tr("Delete…")).clicked() {
                     cx.act(Action::DeletePlaylist(p.id.clone()));
                     ui.close();
                 }

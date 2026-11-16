@@ -7,6 +7,7 @@ use egui::{Color32, CornerRadius, FontId, Id, Key, RichText, Sense, Ui, vec2};
 use mochy_core::models::{SearchResults, Song};
 
 use crate::actions::{Ctx, LoadState};
+use crate::ui::i18n::tr;
 use crate::widgets::{self, RowOpts, TEXT, TEXT_DIM, icons, icons::Icon};
 
 pub const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -24,14 +25,14 @@ pub enum Filter {
 impl Filter {
     const ALL: [Filter; 6] = [Filter::All, Filter::Songs, Filter::Videos, Filter::Albums, Filter::Artists, Filter::Playlists];
     fn label(self) -> &'static str {
-        match self {
+        tr(match self {
             Filter::All => "All",
             Filter::Songs => "Songs",
             Filter::Videos => "Videos",
             Filter::Albums => "Albums",
             Filter::Artists => "Artists",
             Filter::Playlists => "Playlists",
-        }
+        })
     }
 }
 
@@ -123,7 +124,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, st: &mut SearchState, history: &[String])
     });
     ui.add_space(10.0);
     match &st.results {
-        None | Some(LoadState::Loading) => widgets::loading(ui, "Searching…"),
+        None | Some(LoadState::Loading) => widgets::loading(ui, tr("Searching…")),
         Some(LoadState::Failed(e)) => {
             if widgets::error_box(ui, e)
                 && let Some(q) = st.submitted.clone()
@@ -156,7 +157,7 @@ fn search_header(ui: &mut Ui, accent: Color32, st: &mut SearchState, history: &[
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut st.query)
                     .id(edit_id)
-                    .hint_text("Search songs, albums, artists, playlists")
+                    .hint_text(tr("Search songs, albums, artists, playlists"))
                     .font(FontId::proportional(16.0))
                     .frame(egui::Frame::NONE)
                     .desired_width(w),
@@ -208,7 +209,7 @@ fn search_header(ui: &mut Ui, accent: Color32, st: &mut SearchState, history: &[
             ui.add_space(8.0);
         }
         if st.query.trim().is_empty() && !history.is_empty() {
-            widgets::section_title(ui, "Recent searches");
+            widgets::section_title(ui, tr("Recent searches"));
             for h in history.iter().take(12) {
                 if suggestion_row(ui, Icon::Back, h).clicked() {
                     pick = Some(h.clone());
@@ -253,29 +254,29 @@ fn results(ui: &mut Ui, cx: &mut Ctx, st: &mut SearchState, res: &SearchResults)
     let all = st.filter == Filter::All;
     let empty = res.songs.is_empty() && res.videos.is_empty() && res.albums.is_empty() && res.artists.is_empty() && res.playlists.is_empty();
     if empty {
-        ui.label(RichText::new("No results").color(TEXT_DIM));
+        ui.label(RichText::new(tr("No results")).color(TEXT_DIM));
         return;
     }
     if (all || st.filter == Filter::Songs) && !st.songs.is_empty() {
-        widgets::section_title(ui, "Songs");
+        widgets::section_title(ui, tr("Songs"));
         let n = if all { 6.min(st.songs.len()) } else { st.songs.len() };
         let songs = st.songs.clone();
         for i in 0..n {
             widgets::song_row(ui, cx, &songs, i, RowOpts { show_album: true, ..Default::default() });
         }
-        if all && st.songs.len() > n && ui.link("Show all songs").clicked() {
+        if all && st.songs.len() > n && ui.link(tr("Show all songs")).clicked() {
             st.filter = Filter::Songs;
         }
         ui.add_space(10.0);
     }
     if (all || st.filter == Filter::Artists) && !res.artists.is_empty() {
-        cards(ui, "Artists", all, res.artists.len(), |ui, i| widgets::artist_card(ui, cx, &res.artists[i]));
+        cards(ui, tr("Artists"), all, res.artists.len(), |ui, i| widgets::artist_card(ui, cx, &res.artists[i]));
     }
     if (all || st.filter == Filter::Albums) && !res.albums.is_empty() {
-        cards(ui, "Albums", all, res.albums.len(), |ui, i| widgets::album_card(ui, cx, &res.albums[i]));
+        cards(ui, tr("Albums"), all, res.albums.len(), |ui, i| widgets::album_card(ui, cx, &res.albums[i]));
     }
     if (all || st.filter == Filter::Videos) && !st.videos.is_empty() {
-        widgets::section_title(ui, "Videos");
+        widgets::section_title(ui, tr("Videos"));
         let n = if all { 4.min(st.videos.len()) } else { st.videos.len() };
         let vids = st.videos.clone();
         for i in 0..n {
@@ -284,7 +285,7 @@ fn results(ui: &mut Ui, cx: &mut Ctx, st: &mut SearchState, res: &SearchResults)
         ui.add_space(10.0);
     }
     if (all || st.filter == Filter::Playlists) && !res.playlists.is_empty() {
-        cards(ui, "Playlists", all, res.playlists.len(), |ui, i| widgets::playlist_card(ui, cx, &res.playlists[i]));
+        cards(ui, tr("Playlists"), all, res.playlists.len(), |ui, i| widgets::playlist_card(ui, cx, &res.playlists[i]));
     }
 }
 

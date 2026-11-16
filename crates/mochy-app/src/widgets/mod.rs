@@ -12,6 +12,7 @@ use mochy_core::models::{Album, Artist, Playlist, Shelf, ShelfItem, Song};
 use crate::actions::{Action, Ctx};
 use crate::images::{ImageSrc, THUMB_PX};
 use crate::nav::Route;
+use crate::ui::i18n::{self, tr};
 use icons::Icon;
 
 pub const TEXT: Color32 = Color32::from_rgb(0xF2, 0xF2, 0xF2);
@@ -35,7 +36,7 @@ pub fn fmt_time(secs: f64) -> String {
 
 pub fn artists_line(song: &Song) -> String {
     let names: Vec<&str> = song.artists.iter().map(|a| a.name.as_str()).filter(|n| !n.is_empty()).collect();
-    if names.is_empty() { "Unknown artist".into() } else { names.join(", ") }
+    if names.is_empty() { tr("Unknown artist").into() } else { names.join(", ") }
 }
 
 /// Single-line galley truncated with an ellipsis at `max_w`.
@@ -131,9 +132,9 @@ pub fn loading(ui: &mut Ui, what: &str) {
 pub fn error_box(ui: &mut Ui, err: &str) -> bool {
     let mut retry = false;
     egui::Frame::new().fill(Color32::from_rgb(0x2A, 0x16, 0x16)).corner_radius(10).inner_margin(12).show(ui, |ui| {
-        ui.label(egui::RichText::new("Something went wrong").strong().color(Color32::from_rgb(0xFF, 0x9A, 0x9A)));
+        ui.label(egui::RichText::new(tr("Something went wrong")).strong().color(Color32::from_rgb(0xFF, 0x9A, 0x9A)));
         ui.label(egui::RichText::new(err).color(TEXT_DIM).size(12.5));
-        retry = ui.button("Retry").clicked();
+        retry = ui.button(tr("Retry")).clicked();
     });
     retry
 }
@@ -249,31 +250,31 @@ pub fn watch_url(song: &Song) -> Option<String> {
 /// Shared "song actions" menu body.
 pub fn song_menu(ui: &mut Ui, cx: &mut Ctx, song: &Song, playlist_ctx: Option<&str>) {
     ui.set_min_width(200.0);
-    if ui.button("Play").clicked() {
+    if ui.button(tr("Play")).clicked() {
         cx.act(Action::PlaySong(song.clone()));
         ui.close();
     }
-    if ui.button("Play next").clicked() {
+    if ui.button(tr("Play next")).clicked() {
         cx.act(Action::PlayNext(song.clone()));
         ui.close();
     }
-    if ui.button("Add to queue").clicked() {
+    if ui.button(tr("Add to queue")).clicked() {
         cx.act(Action::AddToQueue(vec![song.clone()]));
         ui.close();
     }
-    if song.video_id.is_some() && ui.button("Start radio").clicked() {
+    if song.video_id.is_some() && ui.button(tr("Start radio")).clicked() {
         cx.act(Action::StartRadio(song.clone()));
         ui.close();
     }
     ui.separator();
     let liked = cx.is_liked(song);
-    if ui.button(if liked { "Remove from liked songs" } else { "Add to liked songs" }).clicked() {
+    if ui.button(if liked { tr("Remove from liked songs") } else { tr("Add to liked songs") }).clicked() {
         cx.act(Action::ToggleLike(song.clone()));
         ui.close();
     }
-    ui.menu_button("Add to playlist", |ui| {
+    ui.menu_button(tr("Add to playlist"), |ui| {
         ui.set_min_width(180.0);
-        if ui.button("New playlist…").clicked() {
+        if ui.button(tr("New playlist…")).clicked() {
             cx.act(Action::NewPlaylist(Some(song.clone())));
             ui.close();
         }
@@ -289,7 +290,7 @@ pub fn song_menu(ui: &mut Ui, cx: &mut Ctx, song: &Song, playlist_ctx: Option<&s
         }
     });
     if let Some(pl) = playlist_ctx
-        && ui.button("Remove from this playlist").clicked()
+        && ui.button(tr("Remove from this playlist")).clicked()
     {
         cx.act(Action::RemoveFromPlaylist { playlist_id: pl.to_string(), song_id: song.id.clone() });
         ui.close();
@@ -300,20 +301,20 @@ pub fn song_menu(ui: &mut Ui, cx: &mut Ctx, song: &Song, playlist_ctx: Option<&s
         ui.separator();
     }
     if let Some(a) = artist
-        && ui.button(format!("Go to artist: {}", a.name)).clicked()
+        && ui.button(i18n::goto_artist(&a.name)).clicked()
     {
         cx.act(Action::Navigate(Route::Artist(a.id.clone().unwrap_or_default())));
         ui.close();
     }
     if let Some(al) = album
-        && ui.button("Go to album").clicked()
+        && ui.button(tr("Go to album")).clicked()
     {
         cx.act(Action::Navigate(Route::Album(al)));
         ui.close();
     }
     if let Some(url) = watch_url(song) {
         ui.separator();
-        if ui.button("Copy link").clicked() {
+        if ui.button(tr("Copy link")).clicked() {
             cx.act(Action::CopyText(url));
             ui.close();
         }
@@ -480,8 +481,8 @@ pub fn card(ui: &mut Ui, cx: &mut Ctx, src: Option<&ImageSrc>, title: &str, subt
 pub fn album_card(ui: &mut Ui, cx: &mut Ctx, a: &Album) {
     let src = a.thumbnail_url.clone().map(ImageSrc::Url);
     let sub = match a.year {
-        Some(y) => format!("Album · {y}"),
-        None => "Album".into(),
+        Some(y) => format!("{} · {y}", tr("Album")),
+        None => tr("Album").into(),
     };
     if card(ui, cx, src.as_ref(), &a.title, &sub, false).clicked() {
         cx.act(Action::Navigate(Route::Album(a.id.clone())));
@@ -490,14 +491,14 @@ pub fn album_card(ui: &mut Ui, cx: &mut Ctx, a: &Album) {
 
 pub fn artist_card(ui: &mut Ui, cx: &mut Ctx, a: &Artist) {
     let src = a.thumbnail_url.clone().map(ImageSrc::Url);
-    if card(ui, cx, src.as_ref(), &a.name, "Artist", true).clicked() {
+    if card(ui, cx, src.as_ref(), &a.name, tr("Artist"), true).clicked() {
         cx.act(Action::Navigate(Route::Artist(a.id.clone())));
     }
 }
 
 pub fn playlist_card(ui: &mut Ui, cx: &mut Ctx, p: &Playlist) {
     let src = p.thumbnail_url.clone().map(ImageSrc::Url);
-    let sub = if p.song_count > 0 { format!("Playlist · {} songs", p.song_count) } else { "Playlist".into() };
+    let sub = if p.song_count > 0 { format!("{} · {}", tr("Playlist"), i18n::songs_count(p.song_count as usize)) } else { tr("Playlist").into() };
     if card(ui, cx, src.as_ref(), &p.name, &sub, false).clicked() {
         let id = p.browse_id.clone().unwrap_or_else(|| p.id.clone());
         if id.starts_with("LP") {

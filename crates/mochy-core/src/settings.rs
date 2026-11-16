@@ -35,9 +35,21 @@ pub enum TransitionMode {
     Off,
 }
 
+/// UI language (Settings → Appearance). UI strings are English by default;
+/// the Vietnamese table lives in the app (`ui/i18n.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    #[default]
+    En,
+    Vi,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
+    /// UI language (English / Tiếng Việt).
+    pub language: Language,
     /// Dynamic accent extracted from artwork (Palette+Score, spec §7.4).
     pub dynamic_theme: bool,
     /// Manual accent override as `0xRRGGBB`, when not following artwork.
@@ -54,6 +66,7 @@ pub struct Appearance {
 impl Default for Appearance {
     fn default() -> Self {
         Self {
+            language: Language::default(),
             dynamic_theme: true,
             selected_theme_color: None,
             pure_black: false,

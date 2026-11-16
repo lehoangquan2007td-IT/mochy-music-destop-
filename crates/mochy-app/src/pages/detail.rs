@@ -7,6 +7,7 @@ use mochy_core::models::{Album, Artist, Playlist, Shelf, ShelfItem, Song};
 
 use crate::actions::{Action, Ctx, LoadState};
 use crate::images::{ImageSrc, LARGE_PX};
+use crate::ui::i18n::{self, tr};
 use crate::widgets::{self, RowOpts, TEXT, TEXT_DIM, icons::Icon};
 
 /// What the page wants from the app.
@@ -48,13 +49,13 @@ fn header(
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if let Some(list) = songs.filter(|l| !l.is_empty()) {
-                    if widgets::accent_button(ui, Icon::Play, "Play", cx.accent, true).clicked() {
+                    if widgets::accent_button(ui, Icon::Play, tr("Play"), cx.accent, true).clicked() {
                         cx.act(Action::PlayList { songs: list.clone(), start: 0, shuffle: false });
                     }
-                    if widgets::accent_button(ui, Icon::Shuffle, "Shuffle", cx.accent, false).clicked() {
+                    if widgets::accent_button(ui, Icon::Shuffle, tr("Shuffle"), cx.accent, false).clicked() {
                         cx.act(Action::PlayList { songs: list.clone(), start: 0, shuffle: true });
                     }
-                    if widgets::accent_button(ui, Icon::Queue, "Add to queue", cx.accent, false).clicked() {
+                    if widgets::accent_button(ui, Icon::Queue, tr("Add to queue"), cx.accent, false).clicked() {
                         cx.act(Action::AddToQueue(list.as_ref().clone()));
                     }
                 }
@@ -71,13 +72,13 @@ fn total_duration(songs: &[Song]) -> String {
         return String::new();
     }
     let m = (t / 60.0).round() as u64;
-    if m >= 60 { format!("{} h {} min", m / 60, m % 60) } else { format!("{m} min") }
+    i18n::duration_label(m)
 }
 
 fn state_guard<T>(ui: &mut Ui, st: Option<&LoadState<T>>) -> Result<Arc<T>, Option<DetailEvent>> {
     match st {
         None | Some(LoadState::Loading) => {
-            widgets::loading(ui, "Loading…");
+            widgets::loading(ui, tr("Loading…"));
             Err(None)
         }
         Some(LoadState::Failed(e)) => Err(widgets::error_box(ui, e).then_some(DetailEvent::Retry)),
@@ -97,13 +98,13 @@ pub fn album(ui: &mut Ui, cx: &mut Ctx, st: Option<&LoadState<(Album, Vec<Song>)
     if let Some(y) = al.year {
         sub.push_str(&format!(" · {y}"));
     }
-    sub.push_str(&format!(" · {} songs", songs.len()));
+    sub.push_str(&format!(" · {}", i18n::songs_count(songs.len())));
     let d = total_duration(songs);
     if !d.is_empty() {
         sub.push_str(&format!(" · {d}"));
     }
     let src = al.thumbnail_url.clone().map(ImageSrc::Url);
-    header(ui, cx, src.as_ref(), false, "Album", &al.title, &sub, al.description.as_deref(), Some(&list), |_, _| {});
+    header(ui, cx, src.as_ref(), false, tr("Album"), &al.title, &sub, al.description.as_deref(), Some(&list), |_, _| {});
     widgets::song_list(ui, cx, &list, RowOpts { numbered: true, ..Default::default() });
     None
 }
@@ -123,9 +124,9 @@ pub fn artist(ui: &mut Ui, cx: &mut Ctx, st: Option<&LoadState<(Artist, Vec<Shel
     let list = cached_arc(songs_arc, &ar.id, &top);
     let src = ar.thumbnail_url.clone().map(ImageSrc::Url);
     let radio_seed = top.first().cloned();
-    header(ui, cx, src.as_ref(), true, "Artist", &ar.name, "", None, Some(&list), |ui, cx| {
+    header(ui, cx, src.as_ref(), true, tr("Artist"), &ar.name, "", None, Some(&list), |ui, cx| {
         if let Some(seed) = radio_seed
-            && widgets::accent_button(ui, Icon::Radio, "Radio", cx.accent, false).clicked()
+            && widgets::accent_button(ui, Icon::Radio, tr("Radio"), cx.accent, false).clicked()
         {
             cx.act(Action::StartRadio(seed));
         }
@@ -157,13 +158,13 @@ pub fn playlist(ui: &mut Ui, cx: &mut Ctx, st: Option<&LoadState<(Playlist, Vec<
     };
     let (pl, songs) = data.as_ref();
     let list = cached_arc(songs_arc, &pl.id, songs);
-    let mut sub = format!("{} songs", songs.len());
+    let mut sub = i18n::songs_count(songs.len());
     let d = total_duration(songs);
     if !d.is_empty() {
         sub.push_str(&format!(" · {d}"));
     }
     let src = pl.thumbnail_url.clone().or_else(|| songs.first().and_then(|s| s.thumbnail_url.clone())).map(ImageSrc::Url);
-    header(ui, cx, src.as_ref(), false, "Playlist", &pl.name, &sub, pl.description.as_deref(), Some(&list), |_, _| {});
+    header(ui, cx, src.as_ref(), false, tr("Playlist"), &pl.name, &sub, pl.description.as_deref(), Some(&list), |_, _| {});
     widgets::song_list(ui, cx, &list, RowOpts { show_album: true, ..Default::default() });
     None
 }
@@ -171,30 +172,30 @@ pub fn playlist(ui: &mut Ui, cx: &mut Ctx, st: Option<&LoadState<(Playlist, Vec<
 /// Local (DB) playlist page.
 pub fn local_playlist(ui: &mut Ui, cx: &mut Ctx, pl: Option<&Playlist>, songs: Option<&Arc<Vec<Song>>>) {
     let Some(pl) = pl else {
-        ui.label(RichText::new("Playlist not found").color(TEXT_DIM));
+        ui.label(RichText::new(tr("Playlist not found")).color(TEXT_DIM));
         return;
     };
     let Some(list) = songs else {
-        widgets::loading(ui, "Loading playlist…");
+        widgets::loading(ui, tr("Loading playlist…"));
         return;
     };
-    let mut sub = format!("{} songs", list.len());
+    let mut sub = i18n::songs_count(list.len());
     let d = total_duration(list);
     if !d.is_empty() {
         sub.push_str(&format!(" · {d}"));
     }
     let src = list.first().and_then(crate::images::song_src);
     let id = pl.id.clone();
-    header(ui, cx, src.as_ref(), false, "Your playlist", &pl.name, &sub, pl.description.as_deref(), Some(list), |ui, cx| {
-        if widgets::accent_button(ui, Icon::More, "Rename", cx.accent, false).clicked() {
+    header(ui, cx, src.as_ref(), false, tr("Your playlist"), &pl.name, &sub, pl.description.as_deref(), Some(list), |ui, cx| {
+        if widgets::accent_button(ui, Icon::More, tr("Rename"), cx.accent, false).clicked() {
             cx.act(Action::RenamePlaylist(id.clone()));
         }
-        if widgets::accent_button(ui, Icon::Trash, "Delete", cx.accent, false).clicked() {
+        if widgets::accent_button(ui, Icon::Trash, tr("Delete"), cx.accent, false).clicked() {
             cx.act(Action::DeletePlaylist(id.clone()));
         }
     });
     if list.is_empty() {
-        ui.label(RichText::new("This playlist is empty. Add songs from their ⋯ menu.").color(TEXT_DIM));
+        ui.label(RichText::new(tr("This playlist is empty. Add songs from their ⋯ menu.")).color(TEXT_DIM));
         return;
     }
     widgets::song_list(ui, cx, list, RowOpts { show_album: true, playlist_ctx: Some(&pl.id), ..Default::default() });

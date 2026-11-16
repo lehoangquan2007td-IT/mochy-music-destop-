@@ -8,6 +8,8 @@ use crate::actions::{Action, Ctx};
 use crate::controller::PlayState;
 use crate::images::THUMB_PX;
 use crate::nav::Route;
+use crate::ui::i18n;
+use crate::ui::i18n::tr;
 use crate::widgets::{self, TEXT, TEXT_DIM, icons, icons::Icon};
 
 pub const BAR_H: f32 = 88.0;
@@ -20,10 +22,10 @@ pub fn in_rect<R>(ui: &mut Ui, rect: Rect, layout: Layout, f: impl FnOnce(&mut U
 pub fn transport(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, scale: f32) {
     let accent = widgets::accent_light(cx.accent);
     ui.spacing_mut().item_spacing.x = 10.0 * scale;
-    if icons::icon_button(ui, Icon::Shuffle, 32.0 * scale, now.shuffle, accent).on_hover_text("Shuffle").clicked() {
+    if icons::icon_button(ui, Icon::Shuffle, 32.0 * scale, now.shuffle, accent).on_hover_text(tr("Shuffle")).clicked() {
         cx.act(Action::ToggleShuffle);
     }
-    if icons::icon_button(ui, Icon::Prev, 36.0 * scale, false, accent).on_hover_text("Previous (Ctrl+←)").clicked() {
+    if icons::icon_button(ui, Icon::Prev, 36.0 * scale, false, accent).on_hover_text(tr("Previous (Ctrl+←)")).clicked() {
         cx.act(Action::Prev);
     }
     let loading = now.state == PlayState::Loading;
@@ -42,16 +44,16 @@ pub fn transport(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, scale: f32) {
         ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(2.0, accent)));
         ui.ctx().request_repaint();
     }
-    if r.on_hover_text("Play / pause (Space)").clicked() {
+    if r.on_hover_text(tr("Play / pause (Space)")).clicked() {
         cx.act(Action::Toggle);
     }
-    if icons::icon_button(ui, Icon::Next, 36.0 * scale, false, accent).on_hover_text("Next (Ctrl+→)").clicked() {
+    if icons::icon_button(ui, Icon::Next, 36.0 * scale, false, accent).on_hover_text(tr("Next (Ctrl+→)")).clicked() {
         cx.act(Action::Next);
     }
     let (ri, active, tip) = match now.repeat {
-        RepeatMode::Off => (Icon::Repeat, false, "Repeat: off"),
-        RepeatMode::All => (Icon::Repeat, true, "Repeat: all"),
-        RepeatMode::One => (Icon::RepeatOne, true, "Repeat: one"),
+        RepeatMode::Off => (Icon::Repeat, false, tr("Repeat: off")),
+        RepeatMode::All => (Icon::Repeat, true, tr("Repeat: all")),
+        RepeatMode::One => (Icon::RepeatOne, true, tr("Repeat: one")),
     };
     if icons::icon_button(ui, ri, 32.0 * scale, active, accent).on_hover_text(tip).clicked() {
         cx.act(Action::CycleRepeat);
@@ -76,7 +78,7 @@ pub fn seek_row(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, width: f32) {
 pub fn volume(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, width: f32) {
     let icon = if now.muted || now.volume <= 0.001 { Icon::VolumeMute } else { Icon::Volume };
     if icons::icon_button(ui, icon, 30.0, false, cx.accent)
-        .on_hover_text(format!("Volume {}% (Ctrl+↑/↓)", (now.volume * 100.0).round()))
+        .on_hover_text(i18n::volume_tip((now.volume * 100.0).round() as i64))
         .clicked()
     {
         cx.act(Action::ToggleMute);
@@ -98,7 +100,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, side: Option<SideTab>) {
     if let Some(song) = &now.song {
         let tex = crate::images::song_src(song).and_then(|s| cx.images.get(&s, THUMB_PX));
         widgets::paint_artwork(ui, art, tex.as_ref(), (cx.radius * 0.6).max(4.0));
-        let ar = ui.interact(art, ui.scope_id().with("bar_art"), Sense::click()).on_hover_text("Open now playing");
+        let ar = ui.interact(art, ui.scope_id().with("bar_art"), Sense::click()).on_hover_text(tr("Open now playing"));
         if ar.hovered() {
             ui.painter().rect_filled(art, 6.0, Color32::from_black_alpha(110));
             icons::paint(ui.painter(), art.shrink(16.0), Icon::Expand, Color32::WHITE);
@@ -108,8 +110,8 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, side: Option<SideTab>) {
         }
         let tx = art.right() + 12.0;
         let tw = left_w - (tx - rect.left()) - 40.0;
-        let tr = widgets::paint_text(ui, pos2(tx, cy - 19.0), &song.title, FontId::proportional(14.5), TEXT, tw);
-        let trr = ui.interact(tr, ui.scope_id().with("bar_title"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let title_r = widgets::paint_text(ui, pos2(tx, cy - 19.0), &song.title, FontId::proportional(14.5), TEXT, tw);
+        let trr = ui.interact(title_r, ui.scope_id().with("bar_title"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
         if trr.clicked() {
             match &song.album_id {
                 Some(a) => cx.act(Action::Navigate(Route::Album(a.clone()))),
@@ -125,9 +127,9 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, side: Option<SideTab>) {
             }
         }
         let liked = cx.is_liked(song);
-        let hx = (tr.right().max(arr.right()) + 10.0).min(rect.left() + left_w - 28.0);
+        let hx = (title_r.right().max(arr.right()) + 10.0).min(rect.left() + left_w - 28.0);
         let heart = Rect::from_center_size(pos2(hx + 14.0, cy), vec2(28.0, 28.0));
-        let hr = ui.interact(heart, ui.scope_id().with("bar_heart"), Sense::click()).on_hover_text(if liked { "Unlike" } else { "Like" });
+        let hr = ui.interact(heart, ui.scope_id().with("bar_heart"), Sense::click()).on_hover_text(if liked { tr("Unlike") } else { tr("Like") });
         if hr.hovered() {
             ui.painter().circle_filled(heart.center(), 14.0, Color32::from_white_alpha(18));
         }
@@ -145,7 +147,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, side: Option<SideTab>) {
         }
     } else {
         widgets::paint_artwork(ui, art, None, 6.0);
-        ui.painter().text(pos2(art.right() + 12.0, cy), Align2::LEFT_CENTER, "Nothing playing", FontId::proportional(14.0), TEXT_DIM);
+        ui.painter().text(pos2(art.right() + 12.0, cy), Align2::LEFT_CENTER, tr("Nothing playing"), FontId::proportional(14.0), TEXT_DIM);
     }
 
     // ---- right: format, lyrics, queue, volume, expand -----------------------
@@ -153,7 +155,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, side: Option<SideTab>) {
     let rrect = Rect::from_min_max(pos2(rect.right() - right_w, rect.top()), pos2(rect.right() - 12.0, rect.bottom()));
     in_rect(ui, rrect, Layout::right_to_left(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        if icons::icon_button(ui, Icon::Expand, 30.0, false, cx.accent).on_hover_text("Now playing").clicked() {
+        if icons::icon_button(ui, Icon::Expand, 30.0, false, cx.accent).on_hover_text(tr("Now playing")).clicked() {
             cx.act(Action::SetNowPlaying(true));
         }
         ui.add_space(6.0);
@@ -162,13 +164,13 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, side: Option<SideTab>) {
         ui.allocate_ui_with_layout(vec2(vw + 34.0, 30.0), Layout::left_to_right(Align::Center), |ui| volume(ui, cx, now, vw));
         ui.add_space(6.0);
         if icons::icon_button(ui, Icon::Queue, 30.0, side == Some(SideTab::Queue), widgets::accent_light(cx.accent))
-            .on_hover_text("Queue")
+            .on_hover_text(tr("Queue"))
             .clicked()
         {
             cx.act(Action::ToggleSidePanel(SideTab::Queue));
         }
         if icons::icon_button(ui, Icon::Lyrics, 30.0, side == Some(SideTab::Lyrics), widgets::accent_light(cx.accent))
-            .on_hover_text("Lyrics")
+            .on_hover_text(tr("Lyrics"))
             .clicked()
         {
             cx.act(Action::ToggleSidePanel(SideTab::Lyrics));

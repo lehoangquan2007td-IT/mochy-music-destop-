@@ -45,11 +45,11 @@ pub enum SideTab {
 impl SideTab {
     pub const ALL: [SideTab; 3] = [SideTab::Lyrics, SideTab::Queue, SideTab::Related];
     pub fn label(self) -> &'static str {
-        match self {
+        crate::ui::i18n::tr(match self {
             SideTab::Lyrics => "Lyrics",
             SideTab::Queue => "Queue",
             SideTab::Related => "Related",
-        }
+        })
     }
 }
 

@@ -12,6 +12,7 @@ use crate::actions::{Action, Ctx, LoadState};
 use crate::images::{LARGE_PX, THUMB_PX};
 use crate::nav::Route;
 use crate::queue::Queue;
+use crate::ui::i18n::{self, tr};
 use crate::ui::lyrics_view::{LyricsState, LyricsView};
 use crate::widgets::{self, TEXT, TEXT_DIM, icons, icons::Icon};
 
@@ -53,18 +54,18 @@ pub fn tab_content(ui: &mut Ui, cx: &mut Ctx, tab: SideTab, now: &NowInfo, d: &S
 
 fn lyrics(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, lv: &mut LyricsView) {
     let Some(song) = &now.song else {
-        ui.label(RichText::new("Nothing playing").color(TEXT_DIM));
+        ui.label(RichText::new(tr("Nothing playing")).color(TEXT_DIM));
         return;
     };
     if !d.lyrics_enabled {
-        ui.label(RichText::new("Lyrics are turned off in Settings → Lyrics.").color(TEXT_DIM));
+        ui.label(RichText::new(tr("Lyrics are turned off in Settings → Lyrics.")).color(TEXT_DIM));
         return;
     }
     let offset = song.lyrics_offset_ms;
     // Offset controls pinned to the bottom, lyrics fill the rest.
     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Offset").size(12.0).color(TEXT_DIM));
+            ui.label(RichText::new(tr("Offset")).size(12.0).color(TEXT_DIM));
             if ui.small_button("−0.5 s").clicked() {
                 cx.act(Action::LyricsOffset(-500));
             }
@@ -72,7 +73,7 @@ fn lyrics(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, lv: &mut Lyric
             if ui.small_button("+0.5 s").clicked() {
                 cx.act(Action::LyricsOffset(500));
             }
-            if offset != 0 && ui.small_button("Reset").clicked() {
+            if offset != 0 && ui.small_button(tr("Reset")).clicked() {
                 cx.act(Action::LyricsOffset(-offset));
             }
             if let LyricsState::Loaded(l) = d.lyrics {
@@ -93,13 +94,13 @@ const QROW_H: f32 = 52.0;
 
 fn queue_view(ui: &mut Ui, cx: &mut Ctx, q: &Queue, np: &mut NpUi) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("Queue · {} songs", q.len())).size(14.0).color(TEXT_DIM));
+        ui.label(RichText::new(format!("{} · {}", tr("Queue"), i18n::songs_count(q.len()))).size(14.0).color(TEXT_DIM));
         if q.shuffle() {
-            ui.label(RichText::new("· shuffled").size(12.0).color(widgets::TEXT_FAINT));
+            ui.label(RichText::new(tr("· shuffled")).size(12.0).color(widgets::TEXT_FAINT));
         }
         if !q.is_empty() {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("Clear").on_hover_text("Clear the queue").clicked() {
+                if ui.small_button(tr("Clear")).on_hover_text(tr("Clear the queue")).clicked() {
                     cx.act(Action::QueueClear);
                 }
             });
@@ -107,7 +108,7 @@ fn queue_view(ui: &mut Ui, cx: &mut Ctx, q: &Queue, np: &mut NpUi) {
     });
     ui.add_space(6.0);
     if q.is_empty() {
-        ui.label(RichText::new("The queue is empty.").color(TEXT_DIM));
+        ui.label(RichText::new(tr("The queue is empty.")).color(TEXT_DIM));
         return;
     }
     let cur = q.current_index();
@@ -150,7 +151,7 @@ fn queue_view(ui: &mut Ui, cx: &mut Ctx, q: &Queue, np: &mut NpUi) {
             let dur = song.duration_secs.map(widgets::fmt_time).unwrap_or_default();
             ui.painter().text(pos2(rect.right() - 36.0, cy), Align2::RIGHT_CENTER, dur, FontId::proportional(12.0), TEXT_DIM);
             let xr = Rect::from_center_size(pos2(rect.right() - 18.0, cy), vec2(24.0, 24.0));
-            let xresp = ui.interact(xr, ui.scope_id().with(("qx", e.uid)), Sense::click()).on_hover_text("Remove");
+            let xresp = ui.interact(xr, ui.scope_id().with(("qx", e.uid)), Sense::click()).on_hover_text(tr("Remove"));
             if resp.hovered() || xresp.hovered() {
                 icons::paint(ui.painter(), xr.shrink(6.0), Icon::Close, if xresp.hovered() { TEXT } else { TEXT_DIM });
             }
@@ -161,28 +162,28 @@ fn queue_view(ui: &mut Ui, cx: &mut Ctx, q: &Queue, np: &mut NpUi) {
                 cx.act(Action::QueuePlay(i));
             }
             resp.context_menu(|ui| {
-                if ui.button("Play now").clicked() {
+                if ui.button(tr("Play now")).clicked() {
                     cx.act(Action::QueuePlay(i));
                     ui.close();
                 }
-                if i > 0 && ui.button("Move up").clicked() {
+                if i > 0 && ui.button(tr("Move up")).clicked() {
                     cx.act(Action::QueueMove { from: i, to: i - 1 });
                     ui.close();
                 }
-                if i + 1 < n && ui.button("Move down").clicked() {
+                if i + 1 < n && ui.button(tr("Move down")).clicked() {
                     cx.act(Action::QueueMove { from: i, to: i + 1 });
                     ui.close();
                 }
                 if let Some(c) = cur
                     && i != c
                     && i != c + 1
-                    && ui.button("Play next").clicked()
+                    && ui.button(tr("Play next")).clicked()
                 {
                     let to = if i < c { c } else { c + 1 };
                     cx.act(Action::QueueMove { from: i, to });
                     ui.close();
                 }
-                if ui.button("Remove from queue").clicked() {
+                if ui.button(tr("Remove from queue")).clicked() {
                     cx.act(Action::QueueRemove(i));
                     ui.close();
                 }
@@ -214,21 +215,21 @@ fn queue_view(ui: &mut Ui, cx: &mut Ctx, q: &Queue, np: &mut NpUi) {
 
 fn related(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, np: &mut NpUi) {
     let Some(song) = &now.song else {
-        ui.label(RichText::new("Nothing playing").color(TEXT_DIM));
+        ui.label(RichText::new(tr("Nothing playing")).color(TEXT_DIM));
         return;
     };
     if song.video_id.is_none() {
-        ui.label(RichText::new("Related songs are available for YouTube Music tracks.").color(TEXT_DIM));
+        ui.label(RichText::new(tr("Related songs are available for YouTube Music tracks.")).color(TEXT_DIM));
         return;
     }
     match d.related {
-        None | Some(LoadState::Loading) => widgets::loading(ui, "Loading related…"),
+        None | Some(LoadState::Loading) => widgets::loading(ui, tr("Loading related…")),
         Some(LoadState::Failed(e)) => {
             ui.label(RichText::new(e).color(TEXT_DIM));
         }
         Some(LoadState::Ready(list)) => {
             if list.is_empty() {
-                ui.label(RichText::new("No related songs.").color(TEXT_DIM));
+                ui.label(RichText::new(tr("No related songs.")).color(TEXT_DIM));
                 return;
             }
             let key = song.id.clone();
@@ -282,10 +283,10 @@ pub fn expanded(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, tab: &mu
     // ---- top bar ---------------------------------------------------------------
     let topbar = Rect::from_min_size(rect.min + vec2(16.0, 12.0), vec2(rect.width() - 32.0, 40.0));
     in_rect(ui, topbar, Layout::left_to_right(Align::Center), |ui| {
-        if icons::icon_button(ui, Icon::Collapse, 36.0, false, cx.accent).on_hover_text("Close (Esc)").clicked() {
+        if icons::icon_button(ui, Icon::Collapse, 36.0, false, cx.accent).on_hover_text(tr("Close (Esc)")).clicked() {
             cx.act(Action::SetNowPlaying(false));
         }
-        ui.label(RichText::new("Now playing").size(14.0).color(TEXT_DIM));
+        ui.label(RichText::new(tr("Now playing")).size(14.0).color(TEXT_DIM));
         if let Some(f) = &now.format {
             ui.add_space(8.0);
             egui::Frame::new().fill(Color32::from_white_alpha(16)).corner_radius(8).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| {
@@ -344,7 +345,7 @@ pub fn expanded(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, tab: &mu
                 });
             });
         } else {
-            ui.label(RichText::new("Nothing playing").size(22.0).color(TEXT_DIM));
+            ui.label(RichText::new(tr("Nothing playing")).size(22.0).color(TEXT_DIM));
         }
         ui.add_space(10.0);
         let w = ui.available_width();
