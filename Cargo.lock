@@ -2430,6 +2430,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mochy-download"
+version = "0.1.5"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "image",
+ "lofty",
+ "mochy-lyrics",
+ "regex",
+ "reqwest",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "mochy-innertube"
 version = "0.1.5"
 dependencies = [

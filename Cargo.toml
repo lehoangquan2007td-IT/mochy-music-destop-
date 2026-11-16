@@ -7,6 +7,7 @@ members = [
     "crates/mochy-lyrics",
     "crates/mochy-storage",
     "crates/mochy-app",
+    "crates/mochy-download",
 ]
 
 [workspace.package]
