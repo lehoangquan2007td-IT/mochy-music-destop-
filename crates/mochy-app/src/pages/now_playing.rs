@@ -286,10 +286,10 @@ pub fn expanded(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, tab: &mu
     if let Some(song) = &now.song
         && let Some(tex) = crate::images::song_src(song).and_then(|s| cx.images.get(&s, LARGE_PX))
     {
-        // Oversized, faint cover as a frosted wash.
+        // Oversized, faint cover as a frosted wash (center-cropped, no stretch).
         let side = rect.width().max(rect.height()) * 1.2;
         let r = Rect::from_center_size(rect.center(), vec2(side, side));
-        ui.painter().image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::from_white_alpha(34));
+        ui.painter().image(tex.id(), r, widgets::cover_uv(tex.size_vec2(), r.size()), Color32::from_white_alpha(34));
     }
     gradient(ui, rect, Color32::from_black_alpha(40), Color32::from_black_alpha(70), Color32::from_black_alpha(150), Color32::from_black_alpha(170));
 

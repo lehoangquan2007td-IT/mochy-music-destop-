@@ -54,12 +54,27 @@ pub fn paint_text(ui: &Ui, pos: Pos2, text: &str, font: FontId, color: Color32, 
     rect
 }
 
-/// Artwork with placeholder while loading.
+/// Center-crop UV window (normalized 0..1) so a texture fills `rect` without
+/// distortion — the egui equivalent of CSS `object-fit: cover`. Centered on
+/// the image.
+pub fn cover_uv(tex: Vec2, rect: Vec2) -> Rect {
+    if !(tex.x > 0.0 && tex.y > 0.0) {
+        return Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    }
+    let scale = (rect.x / tex.x).max(rect.y / tex.y);
+    let vis = (rect / scale).min(tex).max(Vec2::ZERO);
+    let min = (((tex - vis) * 0.5) / tex).max(Vec2::ZERO);
+    let max = (((tex + vis) * 0.5) / tex).min(Vec2::ONE).max(min);
+    Rect::from_min_max(min.to_pos2(), max.to_pos2())
+}
+
+/// Artwork with placeholder while loading. Fills `rect` completely
+/// (center-cropped), never stretched.
 pub fn paint_artwork(ui: &Ui, rect: Rect, tex: Option<&TextureHandle>, radius: f32) {
     let cr = CornerRadius::same(radius.clamp(0.0, 255.0) as u8);
     match tex {
         Some(t) => {
-            egui::Image::from_texture(t).corner_radius(cr).paint_at(ui, rect);
+            egui::Image::from_texture(t).uv(cover_uv(t.size_vec2(), rect.size())).corner_radius(cr).paint_at(ui, rect);
         }
         None => {
             ui.painter().rect_filled(rect, cr, SURFACE_2);
@@ -109,6 +124,40 @@ pub fn accent_button(ui: &mut Ui, icon: Icon, text: &str, accent: Color32, fille
 pub fn contrast_fg(c: Color32) -> Color32 {
     let l = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
     if l > 150.0 { Color32::BLACK } else { Color32::WHITE }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cover_uv;
+    use egui::{pos2, vec2};
+
+    #[test]
+    fn square_image_in_square_box_is_full_uv() {
+        let uv = cover_uv(vec2(400.0, 400.0), vec2(200.0, 200.0));
+        assert_eq!(uv.min, pos2(0.0, 0.0));
+        assert_eq!(uv.max, pos2(1.0, 1.0));
+    }
+
+    #[test]
+    fn wide_image_in_square_box_crops_sides() {
+        // 16:9 image in a square box: full height, center 56% of the width.
+        let uv = cover_uv(vec2(400.0, 225.0), vec2(200.0, 200.0));
+        assert_eq!(uv.min.y, 0.0);
+        assert_eq!(uv.max.y, 1.0);
+        let w = uv.max.x - uv.min.x;
+        assert!((w - 225.0 / 400.0).abs() < 1e-4, "w={w}");
+        assert!((uv.min.x - (1.0 - w) / 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn square_image_in_wide_box_crops_top_bottom() {
+        // square image in a 2:1 banner: full width, center half of the height.
+        let uv = cover_uv(vec2(400.0, 400.0), vec2(400.0, 200.0));
+        assert_eq!(uv.min.x, 0.0);
+        assert_eq!(uv.max.x, 1.0);
+        let h = uv.max.y - uv.min.y;
+        assert!((h - 0.5).abs() < 1e-4, "h={h}");
+    }
 }
 
 pub fn section_title(ui: &mut Ui, text: &str) {
