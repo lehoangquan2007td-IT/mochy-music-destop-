@@ -259,6 +259,7 @@ mod tests {
             preamp_db: -4.5,
             auto_preamp: false,
             preset_id: None,
+            ..Default::default()
         };
         let text = export_autoeq(&eq);
         assert!(text.starts_with("Preamp: -4.5 dB\n"));

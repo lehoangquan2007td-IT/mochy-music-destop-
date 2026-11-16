@@ -5,6 +5,7 @@ pub mod home;
 pub mod library;
 pub mod now_playing;
 pub mod player_bar;
+pub mod player_styles;
 pub mod search;
 pub mod settings;
 pub mod sidebar;

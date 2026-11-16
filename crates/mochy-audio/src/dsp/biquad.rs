@@ -3,7 +3,7 @@
 //! `mochy_core::eq::BiquadCoeffs::design` so the engine plays exactly the
 //! curve the UI draws.
 
-use mochy_core::eq::{BiquadCoeffs, EqSettings, FilterType, MAX_BANDS};
+use mochy_core::eq::{BiquadCoeffs, EqSettings, FilterType, MAX_DSP_BANDS as MAX_BANDS};
 
 /// RBJ cookbook biquad, direct form I, f64 state.
 #[derive(Debug, Clone, Copy, Default)]

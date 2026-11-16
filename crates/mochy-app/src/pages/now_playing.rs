@@ -280,6 +280,9 @@ pub fn gradient(ui: &Ui, rect: Rect, tl: Color32, tr: Color32, bl: Color32, br: 
 #[allow(clippy::too_many_arguments)]
 pub fn expanded(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, tab: &mut SideTab, np: &mut NpUi, lv: &mut LyricsView, grad: (Color32, Color32)) {
     let rect = ui.max_rect();
+    if crate::pages::player_styles::show_alternate(ui, cx, now, d, tab, np, lv, grad) {
+        return;
+    }
     // ---- backdrop ------------------------------------------------------------
     let dark = |c: Color32, t: f32| widgets::lerp_color(c, Color32::BLACK, t);
     let (g1, g2) = grad;
@@ -293,6 +296,7 @@ pub fn expanded(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, tab: &mu
         ui.painter().image(tex.id(), r, widgets::cover_uv(tex.size_vec2(), r.size()), Color32::from_white_alpha(34));
     }
     gradient(ui, rect, Color32::from_black_alpha(40), Color32::from_black_alpha(70), Color32::from_black_alpha(150), Color32::from_black_alpha(170));
+    crate::pages::player_styles::paint_backdrop(ui, cx, now, rect, grad);
 
     // ---- top bar ---------------------------------------------------------------
     let topbar = Rect::from_min_size(rect.min + vec2(16.0, 12.0), vec2(rect.width() - 32.0, 40.0));
@@ -301,27 +305,28 @@ pub fn expanded(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, tab: &mu
             cx.act(Action::SetNowPlaying(false));
         }
         ui.label(RichText::new(tr("Now playing")).size(14.0).color(TEXT_DIM));
-        if let Some(f) = &now.format {
+        if let Some(f) = &crate::pages::player_styles::badge(now) {
             ui.add_space(8.0);
             egui::Frame::new().fill(Color32::from_white_alpha(16)).corner_radius(8).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| {
                 ui.label(RichText::new(f).size(11.0).color(TEXT));
             });
         }
+        crate::pages::player_styles::stream_info_button(ui, cx);
     });
 
     let body = Rect::from_min_max(pos2(rect.left() + 32.0, rect.top() + 64.0), pos2(rect.right() - 32.0, rect.bottom() - 24.0));
     let left_w = (body.width() * 0.46).clamp(340.0, 620.0);
+    let left_w = if crate::pages::player_styles::show_side_panel() { left_w } else { body.width() };
     let left = Rect::from_min_max(body.min, pos2(body.left() + left_w, body.bottom()));
     let right = Rect::from_min_max(pos2(left.right() + 40.0, body.top()), body.max);
 
     // ---- left column: cover + info + controls ------------------------------------
     let controls_h = 210.0;
     let art_side = (left.width() - 40.0).min(left.height() - controls_h).max(160.0);
+    let art_side = crate::pages::player_styles::art_side(art_side);
     let art = Rect::from_min_size(pos2(left.center().x - art_side / 2.0, left.top() + ((left.height() - controls_h - art_side) / 2.0).max(0.0)), vec2(art_side, art_side));
     let tex = now.song.as_ref().and_then(crate::images::song_src).and_then(|s| cx.images.get(&s, LARGE_PX));
-    // soft shadow
-    ui.painter().rect_filled(art.expand(6.0).translate(vec2(0.0, 8.0)), CornerRadius::same(28), Color32::from_black_alpha(70));
-    widgets::paint_artwork(ui, art, tex.as_ref(), 22.0);
+    crate::pages::player_styles::paint_cover(ui, cx, now, art, tex.as_ref());
 
     let info = Rect::from_min_max(pos2(art.left(), art.bottom() + 18.0), pos2(art.right(), left.bottom()));
     in_rect(ui, info, Layout::top_down(Align::Min), |ui| {
@@ -373,12 +378,14 @@ pub fn expanded(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, tab: &mu
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.add_space(((w - 200.0) / 2.0).max(0.0));
-            volume(ui, cx, now, 160.0);
+            if crate::pages::player_styles::show_volume() {
+                volume(ui, cx, now, 160.0);
+            }
         });
     });
 
     // ---- right column: tabs ---------------------------------------------------------
-    if right.width() > 220.0 {
+    if right.width() > 220.0 && crate::pages::player_styles::show_side_panel() {
         in_rect(ui, right, Layout::top_down(Align::Min), |ui| {
             tabs(ui, tab);
             ui.add_space(12.0);

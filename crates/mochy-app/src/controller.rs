@@ -563,6 +563,7 @@ impl PlayerController {
                 }
             }
             Event::TrackInfo { codec, sample_rate, channels, bits_per_sample } => {
+                crate::stream_facts::note_decoder(self.queue.current_song(), &codec, sample_rate, channels, bits_per_sample);
                 let mut s = format!("{} {:.1} kHz", codec.to_uppercase(), sample_rate as f32 / 1000.0);
                 if let Some(b) = bits_per_sample {
                     s.push_str(&format!(" {b}-bit"));
@@ -776,6 +777,7 @@ impl PlayerController {
 }
 
 fn prepared_from_stream(st: StreamResult, song: &Song) -> Prepared {
+    crate::stream_facts::note_stream(song.video_id.as_deref(), &st);
     let format = Some(format_label(&st));
     Prepared {
         info: TrackInfo {
@@ -792,6 +794,7 @@ fn prepared_from_stream(st: StreamResult, song: &Song) -> Prepared {
 
 /// Push every Audio Lab setting to the engine (startup + on change).
 pub fn apply_audio_lab(engine: &EngineHandle, lab: &AudioLab) {
+    crate::stream_facts::note_lab(lab);
     engine.send(Command::SetEq { eq: lab.eq.clone() });
     engine.send(Command::SetLoudness {
         enabled: lab.loudness_enabled,

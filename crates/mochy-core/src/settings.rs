@@ -250,6 +250,8 @@ pub struct SpatialSettings {
     pub mono: bool,
     /// Stereo width 0 (mono) – 2 (extra wide); 1 = unchanged.
     pub width: f32,
+    /// How much of the crossfeed / virtual speakers is mixed in, 0–1 (Android `amount`).
+    pub amount: f32,
 }
 
 impl Default for SpatialSettings {
@@ -263,6 +265,7 @@ impl Default for SpatialSettings {
             surround: false,
             mono: false,
             width: 1.0,
+            amount: 1.0,
         }
     }
 }
@@ -404,4 +407,6 @@ pub struct AppSettings {
     /// Downloads / offline / stream cache (Settings → Downloads).
     #[serde(default)]
     pub downloads: crate::download_settings::DownloadSettings,
+    /// Now Playing styles and look (desktop port of the player customisation).
+    pub player: crate::player_look::PlayerLook,
 }

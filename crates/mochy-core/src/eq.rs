@@ -4,6 +4,10 @@
 use serde::{Deserialize, Serialize};
 
 pub const MAX_BANDS: usize = 20;
+/// Most filters a headphone correction (AutoEq) may add on top of the user's curve.
+pub const MAX_CORRECTION_BANDS: usize = 16;
+/// Biquad sections the engine can run at once: the user's curve plus the correction.
+pub const MAX_DSP_BANDS: usize = MAX_BANDS + MAX_CORRECTION_BANDS;
 /// UI gain clamp in dB.
 pub const MAX_GAIN_DB: f32 = 12.0;
 
@@ -40,6 +44,65 @@ impl EqNode {
     }
 }
 
+/// Shape of a headphone in the AutoEq database (from its rig folder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HeadphoneForm {
+    #[default]
+    OverEar,
+    InEar,
+    Earbud,
+}
+
+/// How a headphone correction is fitted (Android `AutoEqTuning`): AutoEq's own
+/// 10-band fit unless something here is changed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoEqTuning {
+    pub bands: u32,
+    pub max_hz: u32,
+    /// A low shelf at 105 Hz added to the target, dB.
+    pub bass_db: f32,
+    /// dB per octave around 1 kHz, positive = brighter.
+    pub tilt_db_per_octave: f32,
+}
+
+impl Default for AutoEqTuning {
+    fn default() -> Self {
+        Self { bands: 10, max_hz: 16_000, bass_db: 0.0, tilt_db_per_octave: 0.0 }
+    }
+}
+
+impl AutoEqTuning {
+    pub const BAND_CHOICES: [u32; 4] = [5, 8, 10, 15];
+    pub const MAX_HZ_CHOICES: [u32; 3] = [10_000, 16_000, 20_000];
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// A headphone correction picked from the AutoEq database, with the filters it
+/// came to (Android `AutoEqCorrection`). It plays under the user's own curve.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoEqCorrection {
+    pub model: String,
+    pub source: String,
+    #[serde(default)]
+    pub rig: Option<String>,
+    /// The result's folder under AutoEq's `results/`, decoded.
+    pub path: String,
+    #[serde(default)]
+    pub form: HeadphoneForm,
+    #[serde(default)]
+    pub tuning: AutoEqTuning,
+    pub filters: Vec<EqNode>,
+    pub preamp_db: f32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Android `EqSettings` from the `audio_lab` store (spec §4.2/§4.3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EqSettings {
@@ -49,11 +112,36 @@ pub struct EqSettings {
     /// Auto preamp headroom from the designed response (spec §4.5).
     pub auto_preamp: bool,
     pub preset_id: Option<String>,
+    /// Headphone correction from the AutoEq database, heard under `nodes`.
+    #[serde(default)]
+    pub correction: Option<AutoEqCorrection>,
+    #[serde(default = "default_true")]
+    pub correction_enabled: bool,
 }
 
 impl Default for EqSettings {
     fn default() -> Self {
-        Self { enabled: false, nodes: Vec::new(), preamp_db: 0.0, auto_preamp: true, preset_id: None }
+        Self {
+            enabled: false,
+            nodes: Vec::new(),
+            preamp_db: 0.0,
+            auto_preamp: true,
+            preset_id: None,
+            correction: None,
+            correction_enabled: true,
+        }
+    }
+}
+
+impl EqSettings {
+    /// The correction, when it is switched on.
+    pub fn active_correction(&self) -> Option<&AutoEqCorrection> {
+        self.correction.as_ref().filter(|_| self.correction_enabled)
+    }
+
+    /// The user's curve alone (no headphone correction).
+    pub fn without_correction(&self) -> EqSettings {
+        EqSettings { correction: None, ..self.clone() }
     }
 }
 
@@ -112,6 +200,7 @@ pub fn settings_from_preset(p: &EqPreset) -> EqSettings {
         preamp_db: 0.0,
         auto_preamp: true,
         preset_id: Some(p.id.to_string()),
+        ..Default::default()
     }
 }
 
@@ -127,6 +216,7 @@ pub fn settings_from_gains(gains: [f32; 10]) -> EqSettings {
         preamp_db: 0.0,
         auto_preamp: true,
         preset_id: None,
+        ..Default::default()
     }
 }
 
@@ -212,8 +302,15 @@ impl BiquadCoeffs {
 }
 
 /// Enabled, audible nodes of `eq` (at most `MAX_BANDS`).
+/// Followed by the headphone correction's filters while it is on (at most
+/// `MAX_CORRECTION_BANDS`), so the engine and the plotted curve both hear it.
 pub fn active_nodes(eq: &EqSettings) -> impl Iterator<Item = &EqNode> {
-    eq.nodes.iter().filter(|n| n.enabled).take(MAX_BANDS)
+    let correction = eq.active_correction().map(|c| c.filters.as_slice()).unwrap_or(&[]);
+    eq.nodes
+        .iter()
+        .filter(|n| n.enabled)
+        .take(MAX_BANDS)
+        .chain(correction.iter().filter(|n| n.enabled).take(MAX_CORRECTION_BANDS))
 }
 
 /// Combined filter response in dB at `freq_hz`, EXCLUDING preamp.
@@ -249,9 +346,16 @@ pub fn auto_preamp_db(eq: &EqSettings) -> f32 {
     if r == 0.0 { 0.0 } else { r }
 }
 
-/// Total preamp applied by the engine: `preamp + (auto headroom if auto_preamp)`.
+/// Total preamp applied by the engine (Android `AudioLabStore.design`):
+/// `preamp + auto headroom` with auto preamp on, else `preamp + the
+/// correction's own preamp` while a headphone correction plays.
 pub fn effective_preamp_db(eq: &EqSettings) -> f32 {
-    eq.preamp_db + if eq.auto_preamp { auto_preamp_db(eq) } else { 0.0 }
+    let headroom = if eq.auto_preamp {
+        auto_preamp_db(eq)
+    } else {
+        eq.active_correction().map_or(0.0, |c| c.preamp_db)
+    };
+    eq.preamp_db + headroom
 }
 
 /// What the listener hears (dB) at `freq_hz`: filters + effective preamp.
@@ -285,6 +389,54 @@ mod tests {
     fn auto_preamp_negative_for_big_bass_boost() {
         let eq = settings_from_gains([12.0, 12.0, 12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         assert!(auto_preamp_db(&eq) < -5.0);
+    }
+
+    fn correction() -> AutoEqCorrection {
+        AutoEqCorrection {
+            model: "Test HP".into(),
+            source: "oratory1990".into(),
+            rig: None,
+            path: "oratory1990/over-ear/Test HP".into(),
+            form: HeadphoneForm::OverEar,
+            tuning: AutoEqTuning::default(),
+            filters: vec![
+                EqNode { filter_type: FilterType::LowShelf, ..EqNode::peaking(105.0, 6.0) },
+                EqNode::peaking(3000.0, -4.0),
+            ],
+            preamp_db: -6.4,
+        }
+    }
+
+    #[test]
+    fn correction_plays_under_the_curve() {
+        let mut eq = settings_from_gains([0.0; 10]);
+        eq.auto_preamp = false;
+        assert_eq!(active_nodes(&eq).count(), 10);
+        eq.correction = Some(correction());
+        assert_eq!(active_nodes(&eq).count(), 12);
+        // The correction is heard, with its own preamp while auto preamp is off.
+        assert!((filters_response_db(&eq, 3000.0, 48_000.0) + 4.0).abs() < 0.3);
+        assert!((effective_preamp_db(&eq) + 6.4).abs() < 1e-4);
+        eq.correction_enabled = false;
+        assert_eq!(active_nodes(&eq).count(), 10);
+        assert_eq!(effective_preamp_db(&eq), 0.0);
+        // Auto preamp covers the correction's bass shelf too.
+        eq.correction_enabled = true;
+        eq.auto_preamp = true;
+        assert!(effective_preamp_db(&eq) < -1.0);
+        assert_eq!(eq.without_correction().correction, None);
+    }
+
+    #[test]
+    fn old_settings_without_correction_still_load() {
+        let json = r#"{"enabled":true,"nodes":[],"preamp_db":-2.0,"auto_preamp":false,"preset_id":null}"#;
+        let eq: EqSettings = serde_json::from_str(json).unwrap();
+        assert!(eq.correction.is_none());
+        assert!(eq.correction_enabled);
+        let mut with = eq.clone();
+        with.correction = Some(correction());
+        let back: EqSettings = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(back, with);
     }
 
     #[test]

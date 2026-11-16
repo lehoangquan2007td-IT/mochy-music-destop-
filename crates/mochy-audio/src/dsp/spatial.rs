@@ -26,6 +26,8 @@ pub struct SpatialParams {
     pub surround: bool,
     pub mono: bool,
     pub width: f32,
+    /// Wet share of crossfeed / virtual speakers, 0–1.
+    pub amount: f32,
 }
 
 impl Default for SpatialParams {
@@ -45,6 +47,7 @@ impl SpatialParams {
             surround: s.surround,
             mono: s.mono,
             width: s.width,
+            amount: if s.amount.is_finite() { s.amount.clamp(0.0, 1.0) } else { 1.0 },
         }
     }
 }
@@ -326,8 +329,8 @@ impl Spatial {
 
     fn targets(&self) -> (f32, f32, f32, f32) {
         let p = &self.params;
-        let sp = if p.speakers { 1.0 } else { 0.0 };
-        let cf = if p.crossfeed && !p.speakers { 1.0 } else { 0.0 };
+        let sp = if p.speakers { p.amount } else { 0.0 };
+        let cf = if p.crossfeed && !p.speakers { p.amount } else { 0.0 };
         let mono = if p.mono { 1.0 } else { 0.0 };
         (cf, sp, mono, p.width.clamp(0.0, 2.0))
     }

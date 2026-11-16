@@ -147,6 +147,9 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
         });
     });
 
+    crate::pages::player_styles::appearance_section(ui, s);
+    crate::pages::player_styles::now_playing_section(ui, s);
+
     // ---- Lyrics --------------------------------------------------------------
     group(ui, tr("Lyrics"), |ui| {
         ui.checkbox(&mut s.lyrics.show, tr("Show lyrics"));

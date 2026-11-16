@@ -13,6 +13,14 @@
 
 #[path = "audio_lab_autoeq.rs"]
 pub mod autoeq;
+#[path = "audio_lab_db.rs"]
+pub mod db;
+#[path = "audio_lab_fx.rs"]
+pub mod fx;
+#[path = "audio_lab_kit.rs"]
+pub mod kit;
+#[path = "audio_lab_quality.rs"]
+pub mod quality;
 
 use std::ops::RangeInclusive;
 
@@ -25,9 +33,10 @@ use mochy_core::eq::{
     MAX_GAIN_DB, UserEqPreset, auto_preamp_db, effective_preamp_db, filters_response_db, log_freqs,
     preset_by_id, settings_from_preset,
 };
-use mochy_core::settings::{AudioLab, REVERB_PRESETS, ReverbSettings};
+use mochy_core::settings::AudioLab;
 
 use super::theme;
+use crate::ui::i18n::tr;
 
 /// Sample rate used for plotting (same as the auto-preamp design).
 const PLOT_SR: f32 = 48_000.0;
@@ -68,6 +77,28 @@ fn is_pass(t: FilterType) -> bool {
     matches!(t, FilterType::LowPass | FilterType::HighPass)
 }
 
+/// The Audio Lab's pages, picked from the hub cards (Android `AudioLabScreen`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LabTab {
+    #[default]
+    Equalizer,
+    Effects,
+    Headphones,
+    Quality,
+}
+
+impl LabTab {
+    /// `MOCHY_SHOTS_LAB_TAB=effects|headphones|quality` opens a page (screenshots).
+    fn from_env() -> LabTab {
+        match std::env::var("MOCHY_SHOTS_LAB_TAB").unwrap_or_default().as_str() {
+            "effects" | "fx" => LabTab::Effects,
+            "headphones" | "autoeq" => LabTab::Headphones,
+            "quality" => LabTab::Quality,
+            _ => LabTab::Equalizer,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum EqViewMode {
     #[default]
@@ -80,14 +111,20 @@ struct CurveCache {
     eq: EqSettings,
     freqs: Vec<f32>,
     total: Vec<f32>,
+    /// What is heard with the headphone correction under the curve (empty without one).
+    with_correction: Vec<f32>,
     max_total: f32,
     auto_preamp: f32,
     effective_preamp: f32,
 }
 
 /// Persistent UI-only state for the Audio Lab page (selected node, etc.).
-#[derive(Default)]
 pub struct AudioLabView {
+    tab: LabTab,
+    fx: fx::FxState,
+    db: db::DbState,
+    follower: kit::LevelFollower,
+    hub_gains: [f32; 3],
     selected: Option<usize>,
     dragging: Option<usize>,
     drag_offset: Vec2,
@@ -102,6 +139,32 @@ pub struct AudioLabView {
     spectrum_display: Vec<f32>,
     spectrum_stamp: Option<std::time::Instant>,
     curve: Option<CurveCache>,
+}
+
+impl Default for AudioLabView {
+    fn default() -> Self {
+        Self {
+            tab: LabTab::from_env(),
+            fx: Default::default(),
+            db: Default::default(),
+            follower: Default::default(),
+            hub_gains: [0.0; 3],
+            selected: None,
+            dragging: None,
+            drag_offset: Vec2::ZERO,
+            menu_node: None,
+            menu_point: None,
+            view_mode: EqViewMode::default(),
+            save_name: String::new(),
+            rename: None,
+            autoeq_text: String::new(),
+            autoeq_status: None,
+            spectrum_target: Vec::new(),
+            spectrum_display: Vec::new(),
+            spectrum_stamp: None,
+            curve: None,
+        }
+    }
 }
 
 impl AudioLabView {
@@ -123,6 +186,12 @@ impl AudioLabView {
         let before = lab.clone();
         sanitize(lab);
         let accent = theme::readable_on_black(accent);
+        // Finished AutoEq downloads / fits land whatever page is open.
+        self.db.poll(ui.ctx(), &mut lab.eq);
+        let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.1);
+        let fresh = self.spectrum_stamp.is_some_and(|t| t.elapsed().as_secs_f32() < 0.5);
+        let live: &[f32] = if fresh { &self.spectrum_target } else { &[] };
+        self.follower.update(live, dt);
 
         egui::ScrollArea::vertical()
             .id_salt("mochy_audio_lab_scroll")
@@ -151,32 +220,145 @@ impl AudioLabView {
 
     fn page(&mut self, ui: &mut Ui, lab: &mut AudioLab, accent: Color32) {
         ui.add_space(8.0);
-        ui.label(RichText::new("Audio Lab").font(theme::bold(ui.ctx(), 30.0)).color(Color32::WHITE));
-        ui.label(RichText::new("Shape how everything sounds").color(theme::TEXT_SECONDARY));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr("Audio")).font(theme::bold(ui.ctx(), 30.0)).color(Color32::WHITE));
+            ui.label(RichText::new(tr("Lab")).font(theme::bold(ui.ctx(), 30.0)).color(theme::TEXT_SECONDARY));
+        });
+        ui.label(RichText::new(tr("Shape how everything sounds")).color(theme::TEXT_SECONDARY));
         ui.add_space(6.0);
-
-        self.eq_card(ui, &mut lab.eq, &mut lab.user_presets, accent);
-        self.autoeq_card(ui, &mut lab.eq, accent);
-
-        let wide = ui.available_width() >= 760.0;
-        if wide {
-            ui.columns(2, |cols| {
-                loudness_card(&mut cols[0], lab, accent);
-                normalization_card(&mut cols[0], lab, accent);
-                volume_curve_card(&mut cols[0], lab, accent);
-                speed_card(&mut cols[1], lab, accent);
-                spatial_card(&mut cols[1], lab, accent);
-            });
-            reverb_card(ui, &mut lab.reverb, accent);
-        } else {
-            loudness_card(ui, lab, accent);
-            normalization_card(ui, lab, accent);
-            volume_curve_card(ui, lab, accent);
-            speed_card(ui, lab, accent);
-            reverb_card(ui, &mut lab.reverb, accent);
-            spatial_card(ui, lab, accent);
+        self.hub(ui, lab, accent);
+        ui.add_space(6.0);
+        match self.tab {
+            LabTab::Equalizer => {
+                self.eq_card(ui, &mut lab.eq, &mut lab.user_presets, accent);
+                self.autoeq_card(ui, &mut lab.eq, accent);
+            }
+            LabTab::Effects => {
+                let t = ui.input(|i| i.time) as f32;
+                let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.1);
+                let fresh = self.spectrum_stamp.is_some_and(|s| s.elapsed().as_secs_f32() < 0.5);
+                let spectrum: Vec<f32> = if fresh { self.spectrum_target.clone() } else { Vec::new() };
+                let f = fx::Frame {
+                    follower: &self.follower,
+                    spectrum: &spectrum,
+                    t,
+                    dt,
+                    volume: crate::stream_facts::snapshot_now().volume,
+                    accent,
+                };
+                fx::page(ui, lab, &mut self.fx, &f);
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+            }
+            LabTab::Headphones => db::page(ui, &mut lab.eq, &mut self.db, accent),
+            LabTab::Quality => quality::page(ui, accent),
         }
         ui.add_space(24.0);
+    }
+
+    /// The hub: big cards for the equalizer and effects, shorter ones for the
+    /// headphone correction and quality; each sketch shows its state.
+    fn hub(&mut self, ui: &mut Ui, lab: &AudioLab, accent: Color32) {
+        let eq = &lab.eq;
+        let band = |from: f32, to: f32| -> f32 {
+            if !eq.enabled {
+                return 0.0;
+            }
+            let v: Vec<f32> =
+                eq.nodes.iter().filter(|n| n.enabled && n.frequency_hz >= from && n.frequency_hz < to).map(|n| n.gain_db).collect();
+            if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 }
+        };
+        let target = [band(0.0, 250.0), band(250.0, 4000.0), band(4000.0, 30_000.0)];
+        let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.1);
+        let mut moving = false;
+        for (g, t) in self.hub_gains.iter_mut().zip(target) {
+            *g += (t - *g) * (1.0 - (-dt * 9.0).exp());
+            if (t - *g).abs() > 0.01 {
+                moving = true;
+            } else {
+                *g = t;
+            }
+        }
+        let t = ui.input(|i| i.time) as f32;
+        let punch = self.follower.punch;
+        let effects = fx::active_effects(lab);
+        let correction = eq.active_correction().map(|c| c.model.clone());
+        let eq_status = if !eq.enabled {
+            tr("OFF").to_string()
+        } else {
+            let curve = eq
+                .preset_id
+                .as_deref()
+                .and_then(|id| {
+                    preset_by_id(id)
+                        .map(|p| tr(p.name).to_string())
+                        .or_else(|| lab.user_presets.iter().find(|p| p.id == id).map(|p| p.name.clone()))
+                })
+                .unwrap_or_else(|| tr("Custom").to_string());
+            match &correction {
+                Some(m) => format!("{curve} · {m}").to_uppercase(),
+                None => curve.to_uppercase(),
+            }
+        };
+        let quality = crate::stream_facts::playback_now().quality;
+        let fx_on = !effects.is_empty();
+        let glow = ui.ctx().animate_bool_with_time(ui.scope_id().with("hub_fx_glow"), fx_on, 0.5);
+        let gains = self.hub_gains;
+        let eq_on = eq.enabled;
+        let fx_status = fx::effects_status(lab);
+        let mut pick = None;
+        let w = ui.available_width();
+        let gap = 12.0;
+        let wide = w >= 700.0;
+        let big = if wide { vec2((w - gap) / 2.0, 128.0) } else { vec2(w, 120.0) };
+        let small = if wide { vec2((w - gap) / 2.0, 64.0) } else { vec2(w, 64.0) };
+        let tab = self.tab;
+        let mut cards = |ui: &mut Ui, which: LabTab| {
+            let r = match which {
+                LabTab::Equalizer => kit::hub_card(ui, big, tr("Equalizer"), &eq_status, eq_on, tab == which, accent, |p, r| {
+                    kit::eq_sketch(p, r, gains, eq_on, punch, t)
+                }),
+                LabTab::Effects => {
+                    kit::hub_card(ui, big, tr("Audio FX"), &fx_status, fx_on, tab == which, accent, |p, r| kit::fx_sketch(p, r, glow, t))
+                }
+                LabTab::Headphones => {
+                    let status = correction.clone().unwrap_or_else(|| tr("NO CORRECTION").to_string()).to_uppercase();
+                    kit::hub_card(ui, small, tr("Headphones"), &status, correction.is_some(), tab == which, accent, |p, r| {
+                        kit::headphone_sketch(p, r, correction.is_some())
+                    })
+                }
+                LabTab::Quality => {
+                    let status = tr("YouTube · {q}").replace("{q}", quality::quality_name(quality)).to_uppercase();
+                    kit::hub_card(ui, small, tr("Audio quality"), &status, true, tab == which, accent, |p, r| {
+                        kit::quality_sketch(p, r, quality::resolution(quality))
+                    })
+                }
+            };
+            if r.clicked() {
+                pick = Some(which);
+            }
+        };
+        ui.spacing_mut().item_spacing = vec2(gap, gap);
+        if wide {
+            ui.horizontal(|ui| {
+                cards(ui, LabTab::Equalizer);
+                cards(ui, LabTab::Effects);
+            });
+            ui.horizontal(|ui| {
+                cards(ui, LabTab::Headphones);
+                cards(ui, LabTab::Quality);
+            });
+        } else {
+            for which in [LabTab::Equalizer, LabTab::Effects, LabTab::Headphones, LabTab::Quality] {
+                cards(ui, which);
+            }
+        }
+        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+        if let Some(t) = pick {
+            self.tab = t;
+        }
+        if moving || (eq_on && punch > 0.01) || glow > 0.01 {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -189,21 +371,24 @@ impl AudioLabView {
         let mut preset_applied = false;
 
         card(ui, |ui| {
-            card_header(ui, "Equalizer", Some("Parametric, up to 20 bands"), Some(&mut eq.enabled), accent);
+            card_header(ui, tr("Equalizer"), Some(tr("Parametric, up to 20 bands")), Some(&mut eq.enabled), accent);
+            self.correction_row(ui, eq, accent);
             let dim = !eq.enabled;
             if dim {
                 ui.multiply_opacity(0.6);
             }
 
             // ---- presets ------------------------------------------------
-            section_label(ui, "Presets");
+            section_label(ui, tr("Presets"));
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                 for p in BUILT_IN_PRESETS {
                     let sel = eq.preset_id.as_deref() == Some(p.id);
-                    if chip(ui, p.name, sel, accent).clicked() {
+                    if chip(ui, tr(p.name), sel, accent).clicked() {
                         let mut s = settings_from_preset(p);
                         s.auto_preamp = eq.auto_preamp;
+                        s.correction = eq.correction.take();
+                        s.correction_enabled = eq.correction_enabled;
                         *eq = s;
                         preset_applied = true;
                         self.selected = None;
@@ -215,15 +400,17 @@ impl AudioLabView {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let cur = if self.view_mode == EqViewMode::Graph { 0 } else { 1 };
-                if let Some(i) = segmented(ui, &["Graph", "10-band"], cur) {
+                if let Some(i) = segmented(ui, &[tr("Graph"), tr("10-band")], cur) {
                     self.view_mode = if i == 0 { EqViewMode::Graph } else { EqViewMode::Bands };
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("Reset to flat").clicked() {
+                    if ui.button(tr("Reset to flat")).clicked() {
                         if let Some(flat) = preset_by_id("flat") {
                             let mut s = settings_from_preset(flat);
                             s.auto_preamp = eq.auto_preamp;
                             s.enabled = eq.enabled;
+                            s.correction = eq.correction.take();
+                            s.correction_enabled = eq.correction_enabled;
                             *eq = s;
                             preset_applied = true;
                         }
@@ -244,8 +431,8 @@ impl AudioLabView {
 
             // ---- preamp ------------------------------------------------
             ui.add_space(4.0);
-            section_label(ui, "Preamp");
-            slider_row(ui, "Preamp", &mut eq.preamp_db, -12.0..=12.0, " dB", 1, false);
+            section_label(ui, tr("Preamp"));
+            slider_row(ui, tr("Preamp"), &mut eq.preamp_db, -12.0..=12.0, " dB", 1, false);
             self.ensure_curve(eq);
             let (auto_db, eff, max_total) = self
                 .curve
@@ -254,8 +441,12 @@ impl AudioLabView {
                 .unwrap_or_default();
             toggle_row(
                 ui,
-                "Auto preamp",
-                Some(&format!("Headroom from the curve: {auto_db:+.1} dB · total preamp {eff:+.1} dB")),
+                tr("Auto preamp"),
+                Some(
+                    &tr("Headroom from the curve: {a} dB · total preamp {t} dB")
+                        .replace("{a}", &format!("{auto_db:+.1}"))
+                        .replace("{t}", &format!("{eff:+.1}")),
+                ),
                 &mut eq.auto_preamp,
                 accent,
             );
@@ -268,10 +459,11 @@ impl AudioLabView {
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(
-                            RichText::new(format!(
-                                "⚠ Peaks reach {max_total:+.1} dB — this can clip. Turn on Auto preamp or lower the preamp by {:.1} dB.",
-                                max_total
-                            ))
+                            RichText::new(
+                                tr("⚠ Peaks reach {p} dB — this can clip. Turn on Auto preamp or lower the preamp by {l} dB.")
+                                    .replace("{p}", &format!("{max_total:+.1}"))
+                                    .replace("{l}", &format!("{max_total:.1}")),
+                            )
                             .color(Color32::from_rgb(0xF2, 0xD4, 0x6B)),
                         );
                     });
@@ -284,6 +476,33 @@ impl AudioLabView {
         }
     }
 
+    /// "Headphone correction: HD 650 · on" under the EQ header, with its switch.
+    fn correction_row(&mut self, ui: &mut Ui, eq: &mut EqSettings, accent: Color32) {
+        let Some(c) = eq.correction.as_ref() else { return };
+        let label = tr("Headphone correction: {name}").replace("{name}", &c.model);
+        let sub = tr("{n} filters from AutoEq, under your curve (dashed pink line)").replace("{n}", &c.filters.len().to_string());
+        let mut on = eq.correction_enabled;
+        egui::Frame::new().fill(theme::ROW).corner_radius(CornerRadius::same(12)).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                ui.painter().circle_filled(r.center(), 4.0, if on { kit::STATUS_ON } else { kit::STATUS_OFF });
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(label).color(Color32::WHITE));
+                    ui.label(RichText::new(sub).small().color(theme::TEXT_SECONDARY));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if toggle(ui, &mut on, accent).changed() {
+                        eq.correction_enabled = on;
+                    }
+                    if ui.small_button(tr("Change…")).clicked() {
+                        self.tab = LabTab::Headphones;
+                    }
+                });
+            });
+        });
+    }
+
     fn user_presets_ui(
         &mut self,
         ui: &mut Ui,
@@ -293,12 +512,12 @@ impl AudioLabView {
         preset_applied: &mut bool,
     ) {
         ui.add_space(2.0);
-        section_label(ui, "Your presets");
+        section_label(ui, tr("Your presets"));
         let mut delete: Option<usize> = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
             if user.is_empty() {
-                ui.label(RichText::new("None yet — save the current curve below.").color(theme::TEXT_FAINT));
+                ui.label(RichText::new(tr("None yet — save the current curve below.")).color(theme::TEXT_FAINT));
             }
             for p in user.iter() {
                 let sel = eq.preset_id.as_deref() == Some(p.id.as_str());
@@ -315,11 +534,11 @@ impl AudioLabView {
 
         ui.horizontal(|ui| {
             let te = egui::TextEdit::singleline(&mut self.save_name)
-                .hint_text("Preset name")
+                .hint_text(tr("Preset name"))
                 .desired_width(180.0);
             let r = ui.add(te);
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if (ui.button("Save as preset").clicked() || enter) && !self.save_name.trim().is_empty() {
+            if (ui.button(tr("Save as preset")).clicked() || enter) && !self.save_name.trim().is_empty() {
                 let millis = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis())
@@ -347,20 +566,20 @@ impl AudioLabView {
                     Some((id, name)) if *id == user[i].id => {
                         let r = ui.add(egui::TextEdit::singleline(name).desired_width(140.0));
                         let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if ui.button("OK").clicked() || enter {
+                        if ui.button(tr("OK")).clicked() || enter {
                             if !name.trim().is_empty() {
                                 user[i].name = name.trim().to_owned();
                             }
                             self.rename = None;
-                        } else if ui.button("Cancel").clicked() {
+                        } else if ui.button(tr("Cancel")).clicked() {
                             self.rename = None;
                         }
                     }
                     _ => {
-                        if ui.button("Rename").clicked() {
+                        if ui.button(tr("Rename")).clicked() {
                             self.rename = Some((user[i].id.clone(), user[i].name.clone()));
                         }
-                        if ui.button("Delete").clicked() {
+                        if ui.button(tr("Delete")).clicked() {
                             delete = Some(i);
                         }
                     }
@@ -383,16 +602,25 @@ impl AudioLabView {
         let auto = auto_preamp_db(eq);
         let eff = effective_preamp_db(eq);
         // Identical to `total_response_db` (filters + effective preamp, 0 when
-        // disabled) without recomputing the auto headroom per point.
+        // disabled) without recomputing the auto headroom per point. The main
+        // curve is the user's own; the correction is drawn on its own line.
+        let own = eq.without_correction();
         let total: Vec<f32> = freqs
             .iter()
-            .map(|&f| if eq.enabled { filters_response_db(eq, f, PLOT_SR) + eff } else { 0.0 })
+            .map(|&f| if eq.enabled { filters_response_db(&own, f, PLOT_SR) + eff } else { 0.0 })
             .collect();
-        let max_total = total.iter().copied().fold(f32::MIN, f32::max);
+        let with_correction: Vec<f32> = if eq.enabled && eq.active_correction().is_some() {
+            freqs.iter().map(|&f| filters_response_db(eq, f, PLOT_SR) + eff).collect()
+        } else {
+            Vec::new()
+        };
+        let max_total =
+            if with_correction.is_empty() { &total } else { &with_correction }.iter().copied().fold(f32::MIN, f32::max);
         self.curve = Some(CurveCache {
             eq: eq.clone(),
             freqs,
             total,
+            with_correction,
             max_total,
             auto_preamp: auto,
             effective_preamp: eff,
@@ -510,7 +738,7 @@ impl AudioLabView {
             ui.set_min_width(170.0);
             match menu_node.filter(|&i| i < eq.nodes.len()) {
                 Some(i) => {
-                    ui.label(RichText::new(format!("Band {}", i + 1)).strong());
+                    ui.label(RichText::new(tr("Band {n}").replace("{n}", &(i + 1).to_string())).strong());
                     for (t, code, name) in FILTER_TYPES {
                         let cur = eq.nodes[i].filter_type == t;
                         if ui.selectable_label(cur, format!("{code}  {name}")).clicked() {
@@ -520,14 +748,14 @@ impl AudioLabView {
                     }
                     ui.separator();
                     let mut en = eq.nodes[i].enabled;
-                    if ui.checkbox(&mut en, "Enabled").changed() {
+                    if ui.checkbox(&mut en, tr("Enabled")).changed() {
                         eq.nodes[i].enabled = en;
                     }
-                    if ui.button("Reset gain").clicked() {
+                    if ui.button(tr("Reset gain")).clicked() {
                         eq.nodes[i].gain_db = 0.0;
                         ui.close();
                     }
-                    if ui.button("Delete band").clicked() {
+                    if ui.button(tr("Delete band")).clicked() {
                         eq.nodes.remove(i);
                         new_sel = Some(None);
                         ui.close();
@@ -535,13 +763,13 @@ impl AudioLabView {
                 }
                 None => {
                     let can_add = eq.nodes.len() < MAX_BANDS;
-                    if ui.add_enabled(can_add, egui::Button::new("Add band here")).clicked() {
+                    if ui.add_enabled(can_add, egui::Button::new(tr("Add band here"))).clicked() {
                         let (f, g) = menu_point.unwrap_or((1000.0, 0.0));
                         eq.nodes.push(EqNode::peaking(f, g));
                         new_sel = Some(Some(eq.nodes.len() - 1));
                         ui.close();
                     }
-                    if ui.button("Flatten all gains").clicked() {
+                    if ui.button(tr("Flatten all gains")).clicked() {
                         for n in &mut eq.nodes {
                             n.gain_db = 0.0;
                         }
@@ -579,13 +807,20 @@ impl AudioLabView {
             }
         }
 
+        if let Some(c) = &self.curve
+            && !c.with_correction.is_empty()
+        {
+            // What is heard with the headphone correction under the curve.
+            let pts = curve_points(&map, &c.freqs, &c.with_correction);
+            clip.extend(Shape::dashed_line(&pts, Stroke::new(1.6, Color32::from_rgb(0xF2, 0x8B, 0xA8).gamma_multiply(0.9)), 7.0, 4.0));
+        }
         if let Some(c) = &self.curve {
             let col = if eq.enabled { accent } else { Color32::from_gray(0x80) };
             draw_curve_fill(&clip, &map, &c.freqs, &c.total, col.gamma_multiply(0.28), col.gamma_multiply(0.0));
             clip.add(Shape::line(curve_points(&map, &c.freqs, &c.total), Stroke::new(2.6, col)));
             if !eq.enabled {
                 // What it would sound like when enabled.
-                let mut on = eq.clone();
+                let mut on = eq.without_correction();
                 on.enabled = true;
                 let eff = effective_preamp_db(&on);
                 let pts: Vec<Pos2> = c
@@ -647,7 +882,7 @@ impl AudioLabView {
             painter.text(
                 plot.center(),
                 Align2::CENTER_CENTER,
-                "Double-click to add a band",
+                tr("Double-click to add a band"),
                 FontId::proportional(14.0),
                 theme::TEXT_SECONDARY,
             );
@@ -665,7 +900,7 @@ impl AudioLabView {
                 }
             }
             let can_add = eq.nodes.len() < MAX_BANDS;
-            let add = ui.add_enabled(can_add, egui::Button::new("+ Add band").corner_radius(CornerRadius::same(255)));
+            let add = ui.add_enabled(can_add, egui::Button::new(tr("+ Add band")).corner_radius(CornerRadius::same(255)));
             if add.clicked() {
                 eq.nodes.push(EqNode::peaking(free_frequency(&eq.nodes), 0.0));
                 self.selected = Some(eq.nodes.len() - 1);
@@ -675,7 +910,7 @@ impl AudioLabView {
             );
         });
         ui.label(
-            RichText::new("Drag a dot to move it · scroll for Q · double-click to add · right-click for options")
+            RichText::new(tr("Drag a dot to move it · scroll for Q · double-click to add · right-click for options"))
                 .small()
                 .color(theme::TEXT_FAINT),
         );
@@ -694,13 +929,13 @@ impl AudioLabView {
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
                     ui.painter().circle_filled(r.center(), 5.0, node_color(i));
-                    ui.label(RichText::new(format!("Band {}", i + 1)).strong().color(Color32::WHITE));
+                    ui.label(RichText::new(tr("Band {n}").replace("{n}", &(i + 1).to_string())).strong().color(Color32::WHITE));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("Delete").clicked() {
+                        if ui.button(tr("Delete")).clicked() {
                             delete = true;
                         }
                         toggle(ui, &mut n.enabled, accent);
-                        ui.label(RichText::new("Enabled").color(theme::TEXT_SECONDARY));
+                        ui.label(RichText::new(tr("Enabled")).color(theme::TEXT_SECONDARY));
                     });
                 });
                 ui.horizontal_wrapped(|ui| {
@@ -711,9 +946,9 @@ impl AudioLabView {
                         }
                     }
                 });
-                slider_row(ui, "Frequency", &mut n.frequency_hz, F_MIN..=F_MAX, " Hz", 0, true);
+                slider_row(ui, tr("Frequency"), &mut n.frequency_hz, F_MIN..=F_MAX, " Hz", 0, true);
                 ui.add_enabled_ui(!is_pass(n.filter_type), |ui| {
-                    slider_row(ui, "Gain", &mut n.gain_db, -MAX_GAIN_DB..=MAX_GAIN_DB, " dB", 1, false);
+                    slider_row(ui, tr("Gain"), &mut n.gain_db, -MAX_GAIN_DB..=MAX_GAIN_DB, " dB", 1, false);
                 });
                 slider_row(ui, "Q", &mut n.q, 0.1..=10.0, "", 2, true);
             });
@@ -737,11 +972,12 @@ impl AudioLabView {
                 .inner_margin(egui::Margin::same(14))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label("This EQ uses custom bands. The classic view needs the 10 standard bands (31 Hz – 16 kHz).");
-                    if ui.button("Convert to 10 bands").on_hover_text("Fits the current curve onto 10 peaking bands").clicked() {
+                    ui.label(tr("This EQ uses custom bands. The classic view needs the 10 standard bands (31 Hz – 16 kHz)."));
+                    if ui.button(tr("Convert to 10 bands")).on_hover_text(tr("Fits the current curve onto 10 peaking bands")).clicked() {
+                        let own = eq.without_correction();
                         let gains: Vec<f32> = BAND_FREQS_HZ
                             .iter()
-                            .map(|&f| snap_gain(filters_response_db(eq, f, PLOT_SR) * 0.8))
+                            .map(|&f| snap_gain(filters_response_db(&own, f, PLOT_SR) * 0.8))
                             .collect();
                         eq.nodes = BAND_FREQS_HZ.iter().zip(gains).map(|(&f, g)| EqNode::peaking(f, g)).collect();
                         self.selected = None;
@@ -768,7 +1004,7 @@ impl AudioLabView {
                 });
             }
         });
-        ui.label(RichText::new("Double-click a fader to reset it").small().color(theme::TEXT_FAINT));
+        ui.label(RichText::new(tr("Double-click a fader to reset it")).small().color(theme::TEXT_FAINT));
     }
 
     // -----------------------------------------------------------------------
@@ -777,7 +1013,7 @@ impl AudioLabView {
 
     fn autoeq_card(&mut self, ui: &mut Ui, eq: &mut EqSettings, accent: Color32) {
         card(ui, |ui| {
-            card_header(ui, "AutoEQ", Some("Import or export ParametricEQ.txt"), None, accent);
+            card_header(ui, tr("AutoEQ file"), Some(tr("Import or export ParametricEQ.txt")), None, accent);
             ui.add(
                 egui::TextEdit::multiline(&mut self.autoeq_text)
                     .font(egui::TextStyle::Monospace)
@@ -786,11 +1022,11 @@ impl AudioLabView {
                     .hint_text("Preamp: -6.2 dB\nFilter 1: ON PK Fc 105 Hz Gain 3.4 dB Q 0.70\n…"),
             );
             ui.horizontal_wrapped(|ui| {
-                if ui.add_enabled(!self.autoeq_text.trim().is_empty(), egui::Button::new("Import pasted")).clicked() {
+                if ui.add_enabled(!self.autoeq_text.trim().is_empty(), egui::Button::new(tr("Import pasted"))).clicked() {
                     let text = self.autoeq_text.clone();
                     self.import_autoeq(eq, &text);
                 }
-                if ui.button("Open file…").clicked()
+                if ui.button(tr("Open file…")).clicked()
                     && let Some(path) = rfd::FileDialog::new()
                         .set_title("Open AutoEq ParametricEQ.txt")
                         .add_filter("ParametricEQ", &["txt"])
@@ -805,13 +1041,13 @@ impl AudioLabView {
                     }
                 }
                 ui.separator();
-                if ui.button("Copy current EQ").clicked() {
+                if ui.button(tr("Copy current EQ")).clicked() {
                     let text = autoeq::export_autoeq(eq);
                     ui.ctx().copy_text(text.clone());
                     self.autoeq_text = text;
-                    self.autoeq_status = Some((true, "Copied to clipboard".into()));
+                    self.autoeq_status = Some((true, tr("Copied to clipboard").into()));
                 }
-                if ui.button("Save as file…").clicked()
+                if ui.button(tr("Save as file…")).clicked()
                     && let Some(path) = rfd::FileDialog::new()
                         .set_title("Export EQ")
                         .set_file_name("ParametricEQ.txt")
@@ -854,154 +1090,6 @@ impl AudioLabView {
 }
 
 // ---------------------------------------------------------------------------
-// Other cards
-// ---------------------------------------------------------------------------
-
-fn loudness_card(ui: &mut Ui, lab: &mut AudioLab, accent: Color32) {
-    card(ui, |ui| {
-        card_header(ui, "Loudness", Some("Boost + gentle compression"), Some(&mut lab.loudness_enabled), accent);
-        dim_if(ui, !lab.loudness_enabled);
-        slider_row(ui, "Boost", &mut lab.loudness_boost_db, 0.0..=12.0, " dB", 1, false);
-        percent_row(ui, "Compression", &mut lab.loudness_compression);
-    });
-}
-
-fn normalization_card(ui: &mut Ui, lab: &mut AudioLab, accent: Color32) {
-    card(ui, |ui| {
-        card_header(ui, "Normalization", Some("ReplayGain (track)"), Some(&mut lab.normalize_replay_gain), accent);
-        dim_if(ui, !lab.normalize_replay_gain);
-        slider_row(ui, "Preamp", &mut lab.normalize_preamp_db, -12.0..=12.0, " dB", 1, false);
-    });
-}
-
-fn volume_curve_card(ui: &mut Ui, lab: &mut AudioLab, accent: Color32) {
-    card(ui, |ui| {
-        card_header(ui, "Volume curve", Some("gain = limit · volume^exponent"), Some(&mut lab.volume_curve_enabled), accent);
-        dim_if(ui, !lab.volume_curve_enabled);
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width((ui.available_width() - 110.0).max(120.0));
-                slider_row(ui, "Exponent", &mut lab.volume_curve_exponent, 1.0..=5.0, "", 2, false);
-                slider_row(ui, "Limit", &mut lab.volume_curve_limit, 0.05..=1.0, "", 2, false);
-            });
-            let (rect, _) = ui.allocate_exact_size(vec2(96.0, 64.0), Sense::hover());
-            let p = ui.painter_at(rect);
-            p.rect_filled(rect, CornerRadius::same(10), theme::STAGE);
-            let inner = rect.shrink(8.0);
-            let lin: Vec<Pos2> = [0.0, 1.0].iter().map(|&v| pos2(inner.left() + v * inner.width(), inner.bottom() - v * inner.height())).collect();
-            p.extend(Shape::dashed_line(&lin, Stroke::new(1.0, Color32::from_white_alpha(50)), 3.0, 3.0));
-            let (e, l, on) = (lab.volume_curve_exponent, lab.volume_curve_limit, lab.volume_curve_enabled);
-            let pts: Vec<Pos2> = (0..=32)
-                .map(|k| {
-                    let v = k as f32 / 32.0;
-                    let g = if on { l * v.powf(e) } else { v };
-                    pos2(inner.left() + v * inner.width(), inner.bottom() - g * inner.height())
-                })
-                .collect();
-            p.add(Shape::line(pts, Stroke::new(2.0, accent)));
-        });
-    });
-}
-
-fn speed_card(ui: &mut Ui, lab: &mut AudioLab, accent: Color32) {
-    card(ui, |ui| {
-        card_header(ui, "Speed & pitch", None, None, accent);
-        slider_row(ui, "Speed", &mut lab.speed, 0.1..=8.0, "×", 2, true);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            for s in [0.5f32, 0.75, 1.0, 1.25, 1.5, 2.0] {
-                if chip(ui, &format!("{s}×"), (lab.speed - s).abs() < 0.001, accent).clicked() {
-                    lab.speed = s;
-                }
-            }
-        });
-        let mut pitch = lab.pitch_semitones;
-        let r = slider_row(ui, "Pitch", &mut pitch, -12.0..=12.0, " st", 1, false);
-        if r.changed() {
-            lab.pitch_semitones = (pitch * 2.0).round() / 2.0; // half-semitone steps
-        }
-        toggle_row(ui, "Preserve pitch", Some("Change speed without changing pitch"), &mut lab.preserve_pitch, accent);
-        ui.horizontal(|ui| {
-            if ui.button("Reset speed & pitch").clicked() {
-                lab.speed = 1.0;
-                lab.pitch_semitones = 0.0;
-            }
-        });
-    });
-}
-
-fn reverb_card(ui: &mut Ui, rv: &mut ReverbSettings, accent: Color32) {
-    card(ui, |ui| {
-        card_header(ui, "Reverb", Some("Freeverb-style room"), Some(&mut rv.enabled), accent);
-        dim_if(ui, !rv.enabled);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            for p in REVERB_PRESETS {
-                if chip(ui, p.1, rv.preset_id == p.0, accent).clicked()
-                    && let Some(s) = ReverbSettings::from_preset(p.0, rv.enabled)
-                {
-                    *rv = s;
-                }
-            }
-        });
-        let before = rv.clone();
-        if ui.available_width() > 640.0 {
-            // Two columns of sliders on wide layouts.
-            ui.columns(2, |cols| {
-                let (a, b) = cols.split_at_mut(1);
-                reverb_sliders(&mut a[0], &mut b[0], rv);
-            });
-        } else {
-            reverb_sliders_single(ui, rv);
-        }
-        if *rv != before && rv.preset_id == before.preset_id {
-            rv.preset_id = "custom".into();
-        }
-    });
-}
-
-fn reverb_sliders(left: &mut Ui, right: &mut Ui, rv: &mut ReverbSettings) {
-    percent_row(left, "Mix", &mut rv.mix);
-    percent_row(left, "Room size", &mut rv.room_size);
-    percent_row(left, "Damping", &mut rv.damping);
-    percent_row(left, "Wet", &mut rv.wet);
-    percent_row(right, "Dry", &mut rv.dry);
-    percent_row(right, "Width", &mut rv.width);
-    slider_row(right, "Pre-delay", &mut rv.pre_delay_ms, 0.0..=200.0, " ms", 0, false);
-    slider_row(right, "Low cut", &mut rv.low_cut_hz, 20.0..=1000.0, " Hz", 0, true);
-}
-
-fn reverb_sliders_single(ui: &mut Ui, rv: &mut ReverbSettings) {
-    percent_row(ui, "Mix", &mut rv.mix);
-    percent_row(ui, "Room size", &mut rv.room_size);
-    percent_row(ui, "Damping", &mut rv.damping);
-    percent_row(ui, "Wet", &mut rv.wet);
-    percent_row(ui, "Dry", &mut rv.dry);
-    percent_row(ui, "Width", &mut rv.width);
-    slider_row(ui, "Pre-delay", &mut rv.pre_delay_ms, 0.0..=200.0, " ms", 0, false);
-    slider_row(ui, "Low cut", &mut rv.low_cut_hz, 20.0..=1000.0, " Hz", 0, true);
-}
-
-fn spatial_card(ui: &mut Ui, lab: &mut AudioLab, accent: Color32) {
-    let sp = &mut lab.spatial;
-    card(ui, |ui| {
-        card_header(ui, "Spatial", Some("Crossfeed, virtual speakers, width"), None, accent);
-        toggle_row(ui, "Headphone crossfeed", None, &mut sp.crossfeed_enabled, accent);
-        ui.add_enabled_ui(sp.crossfeed_enabled, |ui| {
-            slider_row(ui, "Cutoff", &mut sp.crossfeed_cutoff_hz, 300.0..=2000.0, " Hz", 0, true);
-            slider_row(ui, "Feed", &mut sp.crossfeed_feed_db, 1.0..=15.0, " dB", 1, false);
-        });
-        toggle_row(ui, "Virtual speakers", None, &mut sp.virtual_speakers, accent);
-        ui.add_enabled_ui(sp.virtual_speakers, |ui| {
-            slider_row(ui, "Speaker angle", &mut sp.speaker_angle_deg, 5.0..=90.0, "°", 0, false);
-        });
-        toggle_row(ui, "Surround", None, &mut sp.surround, accent);
-        toggle_row(ui, "Mono", Some("Sum both channels"), &mut sp.mono, accent);
-        slider_row(ui, "Stereo width", &mut sp.width, 0.0..=2.0, "", 2, false);
-    });
-}
-
-// ---------------------------------------------------------------------------
 // Value sanitizing (documented ranges, spec §4.2/§4.6/§4.7)
 // ---------------------------------------------------------------------------
 
@@ -1022,6 +1110,16 @@ pub fn sanitize(lab: &mut AudioLab) {
         fin(&mut n.q, 0.1, 10.0, 1.41);
     }
     fin(&mut eq.preamp_db, -12.0, 12.0, 0.0);
+    if let Some(c) = eq.correction.as_mut() {
+        c.filters.truncate(mochy_core::eq::MAX_CORRECTION_BANDS);
+        for n in &mut c.filters {
+            fin(&mut n.frequency_hz, F_MIN, F_MAX, 1000.0);
+            fin(&mut n.gain_db, -MAX_GAIN_DB, MAX_GAIN_DB, 0.0);
+            fin(&mut n.q, 0.1, 10.0, 0.71);
+        }
+        fin(&mut c.preamp_db, -24.0, 12.0, 0.0);
+    }
+    fin(&mut lab.spatial.amount, 0.0, 1.0, 1.0);
     fin(&mut lab.loudness_boost_db, 0.0, 12.0, 4.0);
     fin(&mut lab.loudness_compression, 0.0, 1.0, 0.3);
     fin(&mut lab.volume_curve_exponent, 1.0, 5.0, 2.0);
@@ -1244,12 +1342,6 @@ fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
         add(ui);
     });
     ui.add_space(4.0);
-}
-
-fn dim_if(ui: &mut Ui, off: bool) {
-    if off {
-        ui.multiply_opacity(0.6);
-    }
 }
 
 fn card_header(ui: &mut Ui, title: &str, subtitle: Option<&str>, toggle_value: Option<&mut bool>, accent: Color32) {

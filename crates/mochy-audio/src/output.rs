@@ -136,6 +136,13 @@ pub(crate) fn open_output(
     }
     .map_err(|e| format!("open stream: {e}"))?;
     stream.play().map_err(|e| format!("start stream: {e}"))?;
+    crate::output_info::publish(crate::output_info::OutputFormat {
+        device: device_name(&device),
+        sample_rate,
+        channels,
+        sample_format: format!("{}", supported.sample_format()),
+        host: format!("{:?}", host.id()),
+    });
     Ok((Output { _stream: stream, link, params: params_tx, tap: tap_rx }, producer))
 }
 

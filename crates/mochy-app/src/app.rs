@@ -1350,6 +1350,7 @@ impl eframe::App for MochyApp {
         let ctx = ui.ctx().clone();
         // UI language, pushed before drawing so every tr() this frame agrees.
         crate::ui::i18n::set_lang(self.settings.appearance.language);
+        crate::pages::player_styles::begin_frame(&ctx, &mut self.settings, self.player.current(), self.player.volume);
         self.images.begin_frame();
         self.shortcuts(&ctx);
         self.window_housekeeping(&ctx);
