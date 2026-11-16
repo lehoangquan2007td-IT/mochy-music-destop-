@@ -2383,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-app"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "dirs",
  "eframe",
@@ -2408,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-audio"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "cpal",
  "mochy-core",
@@ -2422,7 +2422,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2431,7 +2431,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-innertube"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "mochy-core",
  "rand",
@@ -2444,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-lyrics"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-storage"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "dirs",
  "mochy-core",
