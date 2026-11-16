@@ -2438,6 +2438,8 @@ dependencies = [
  "flate2",
  "image",
  "lofty",
+ "mochy-core",
+ "mochy-innertube",
  "mochy-lyrics",
  "regex",
  "reqwest",
