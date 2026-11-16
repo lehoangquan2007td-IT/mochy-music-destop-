@@ -38,6 +38,10 @@ pub enum StorageError {
 
 pub type StorageResult<T> = Result<T, StorageError>;
 
+// Library parity + listening stats queries (saved albums/artists, history events, stats).
+mod library_ext;
+pub use library_ext::*;
+
 /// Room `user_version` of the schema created here.
 pub const SCHEMA_VERSION: i32 = 43;
 
