@@ -1061,6 +1061,7 @@ impl MochyApp {
         if needs_lyrics {
             self.ensure_lyrics();
         }
+        self.lyrics_view.update_extras(&self.svc, &self.settings.lyrics, &self.lyrics, self.player.current(), ui.ctx());
         if needs_related {
             self.ensure_related();
         }

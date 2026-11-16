@@ -17,6 +17,7 @@ mod images;
 mod local_scan;
 mod logging;
 mod lyrics;
+mod lyrics_extras;
 mod media_keys;
 mod nav;
 mod pages;

@@ -740,14 +740,12 @@ fn provider_ids_round_trip() {
 fn default_config_skips_unported_and_dead() {
     let cfg = FetchConfig::default();
     assert_eq!(cfg.timeout, std::time::Duration::from_secs(35));
-    for p in [
-        ProviderId::YouTubeSubtitle,
-        ProviderId::YouTubeMusic,
-        ProviderId::YouTubeCaptions,
-        ProviderId::Paxsenix,
-    ] {
-        assert!(!cfg.order.contains(&p));
+    assert!(!cfg.order.contains(&ProviderId::Paxsenix));
+    // the YouTube sources are ported now; auto captions stay last
+    for p in [ProviderId::YouTubeSubtitle, ProviderId::YouTubeMusic, ProviderId::YouTubeCaptions] {
+        assert!(cfg.order.contains(&p));
     }
+    assert_eq!(cfg.order.last(), Some(&ProviderId::YouTubeCaptions));
     assert_eq!(cfg.order.first(), Some(&ProviderId::BetterLyrics));
     assert!(cfg.order.contains(&ProviderId::LrcRed));
 }

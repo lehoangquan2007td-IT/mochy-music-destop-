@@ -5,9 +5,12 @@
 //! ```
 //!
 //! - with a provider id (`LRCLIB`, `BetterLyrics`, …): prints that provider's result;
-//! - without one (or `all`): asks every ported provider (including ones disabled by default)
-//!   one by one, prints a summary table, then runs the real [`mochy_lyrics::fetch`] with the
-//!   default config and prints the winner.
+//! - without one (or `all`): asks every ported provider (including ones disabled by default;
+//!   the YouTube ones only with a `video_id`) one by one, prints a summary table, then runs the
+//!   real [`mochy_lyrics::fetch`] with the default config and prints the winner.
+//!
+//! The first lines of the result are also romanized (when the song is in a romanizable script)
+//! and, with `TRANSLATE=<lang>` set (e.g. `TRANSLATE=vi`), translated with Google Translate.
 
 use std::time::{Duration, Instant};
 
@@ -31,6 +34,8 @@ fn summary(l: &Lyrics) -> String {
     )
 }
 
+/// Metadata of the first `n` lines only (timestamps, character / word counts) — never the
+/// lyric text itself.
 fn print_lines(l: &Lyrics, n: usize) {
     for line in l.lines.iter().take(n) {
         let tag = match (&line.agent, line.bg) {
@@ -39,11 +44,42 @@ fn print_lines(l: &Lyrics, n: usize) {
             _ => String::new(),
         };
         println!(
-            "    [{:7.2}]{tag} {}  ({} words)",
+            "    [{:7.2}]{tag} {} chars, {} words",
             line.time,
-            line.text,
+            line.text.chars().count(),
             line.words.len()
         );
+    }
+}
+
+/// Romanization (always, when the script has one) and translation (`TRANSLATE=<lang>`) of the
+/// whole song: prints how many lines got a reading / translation and their sizes, not the text.
+async fn extras(l: &Lyrics, http: &reqwest::Client, video_id: Option<&str>) {
+    if let (SyncKind::Plain, Some(vid)) = (l.sync, video_id) {
+        match mochy_lyrics::autosync::sync_plain_to_video(l, vid, None).await {
+            Some(s) => println!("--- plain lyrics timed from captions: {} lines, first at {:.2}s, last at {:.2}s", s.lines.len(), s.lines[0].time, s.lines.last().map(|x| x.time).unwrap_or(0.0)),
+            None => println!("--- plain lyrics could not be timed from captions"),
+        }
+    }
+    let texts: Vec<&str> = l.lines.iter().map(|x| x.text.as_str()).collect();
+    if let Some(lang) = mochy_lyrics::romanize::song_language(&texts.join(" ")) {
+        let r = mochy_lyrics::romanize::romanize_song(&texts, |_| true);
+        let n = r.iter().flatten().count();
+        let ascii = r.iter().flatten().filter(|x| x.is_ascii()).count();
+        let chars: usize = r.iter().flatten().map(|x| x.chars().count()).sum();
+        println!("--- romanized as {lang:?}: {n}/{} lines ({ascii} pure ASCII, {chars} chars)", texts.len());
+    } else {
+        println!("--- nothing to romanize");
+    }
+    if let Ok(tl) = std::env::var("TRANSLATE") {
+        match mochy_lyrics::translate::translate_song(http, &texts, &tl, "auto").await {
+            Some(tr) => {
+                let n = tr.iter().flatten().count();
+                let chars: usize = tr.iter().flatten().map(|x| x.chars().count()).sum();
+                println!("--- translated → {tl}: {n}/{} lines, {chars} chars", texts.len());
+            }
+            None => println!("--- translation failed ---"),
+        }
     }
 }
 
@@ -74,12 +110,13 @@ async fn main() {
             .iter()
             .copied()
             .filter(|p| {
-                !matches!(
-                    p,
-                    ProviderId::YouTubeSubtitle
-                        | ProviderId::YouTubeMusic
-                        | ProviderId::YouTubeCaptions
-                )
+                meta.video_id.is_some()
+                    || !matches!(
+                        p,
+                        ProviderId::YouTubeSubtitle
+                            | ProviderId::YouTubeMusic
+                            | ProviderId::YouTubeCaptions
+                    )
             })
             .collect()
     } else {
@@ -121,10 +158,8 @@ async fn main() {
                     println!("{:<14} OK {} ({dt:.1}s){enabled}", p.id(), summary(&l));
                     if providers.len() == 1 {
                         print_lines(&l, 12);
-                        println!(
-                            "--- raw (first 600 chars) ---\n{}",
-                            raw.chars().take(600).collect::<String>()
-                        );
+                        extras(&l, &http, meta.video_id.as_deref()).await;
+                        println!("--- raw payload: {} chars", raw.chars().count());
                     } else {
                         print_lines(&l, 2);
                     }
@@ -148,6 +183,7 @@ async fn main() {
                     t0.elapsed().as_secs_f32()
                 );
                 print_lines(&l, 4);
+                extras(&l, &http, meta.video_id.as_deref()).await;
                 assert!(l.sync != SyncKind::None);
             }
             None => println!("== fetch(): no lyrics ({:.1}s)", t0.elapsed().as_secs_f32()),

@@ -89,6 +89,7 @@ fn lyrics(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, lv: &mut Lyric
             if let LyricsState::Loaded(l) = d.lyrics {
                 ui.label(RichText::new(format!("· {}", l.provider)).size(11.0).color(widgets::TEXT_FAINT));
             }
+            crate::lyrics_extras::toolbar(ui, lv);
         });
         ui.with_layout(Layout::top_down(Align::Min), |ui| {
             let scale = d.lyrics_scale.clamp(0.5, 2.5);

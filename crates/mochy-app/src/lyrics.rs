@@ -1,4 +1,6 @@
-//! Lyrics loading for the current track: DB cache → providers → DB cache.
+//! Lyrics loading for the current track: lyrics embedded in a local file (tags / sidecar
+//! `.lrc`, Android reads these first, offline too) → DB cache → providers (plain results are
+//! timed from the video's captions when possible) → DB cache.
 //! Every call into `mochy_lyrics` runs in its own spawned task so a panic
 //! there (e.g. an unimplemented provider) becomes `LyricsState::Error`
 //! instead of taking the app down.
@@ -39,6 +41,14 @@ async fn guarded<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'stati
 pub async fn load(svc: Services, song: Song, order: Vec<ProviderId>) -> LyricsState {
     let key = song.video_id.clone().unwrap_or_else(|| song.id.clone());
 
+    // 0. The local file's own lyrics (Android `LyricsHelper.getLyrics` → `readEmbeddedLyrics`).
+    if let Some(path) = song.local_path.clone() {
+        let embedded = tokio::task::spawn_blocking(move || mochy_lyrics::embedded::read_file_lyrics(&path)).await.ok().flatten();
+        if let Some(lyrics) = embedded.and_then(|raw| Lyrics::from_lrc(mochy_lyrics::embedded::PROVIDER, &raw)) {
+            return LyricsState::Loaded(lyrics);
+        }
+    }
+
     // 1. DB cache.
     let k = key.clone();
     let cached = svc.db.query(move |db| db.load_lyrics(&k).ok().flatten()).await.ok().flatten();
@@ -55,8 +65,33 @@ pub async fn load(svc: Services, song: Song, order: Vec<ProviderId>) -> LyricsSt
     // 2. Providers.
     let meta = TrackMeta::from(&song);
     let http = svc.http.clone();
-    let cfg = FetchConfig { order, ..FetchConfig::default() };
-    let fetched = guarded(async move { mochy_lyrics::fetch(&meta, &cfg, &http).await }).await;
+    // The app's InnerTube client for the YouTube sources (locale + visitor data); not worth
+    // waiting long for, the crate falls back to a client of its own.
+    let ytm = if song.video_id.is_some() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), svc.ytm()).await.ok().and_then(Result::ok).map(|c| (*c).clone())
+    } else {
+        None
+    };
+    let video_id = song.video_id.clone();
+    let cfg = FetchConfig { order, ytm, ..FetchConfig::default() };
+    let fetched = guarded(async move {
+        let found = mochy_lyrics::fetch(&meta, &cfg, &http).await;
+        // Untimed lyrics + a video: time them from the video's captions when they line up
+        // (mochy_lyrics::autosync, after Android's CaptionAligner).
+        match (found, video_id) {
+            (Some(l), Some(vid)) if l.sync == SyncKind::Plain => {
+                match mochy_lyrics::autosync::sync_plain_to_video(&l, &vid, cfg.ytm.as_ref()).await {
+                    Some(synced) => {
+                        tracing::info!(lines = synced.lines.len(), "plain lyrics timed from captions");
+                        Some(synced)
+                    }
+                    None => Some(l),
+                }
+            }
+            (found, _) => found,
+        }
+    })
+    .await;
     match fetched {
         Ok(Some(lyrics)) => {
             // 3. Store (best effort; serialisation runs guarded too).
@@ -117,8 +152,8 @@ mod tests {
 
     #[test]
     fn order_filters_unimplemented_and_defaults() {
-        let s = LyricsSettings { provider_order: vec!["LRCLIB".into(), "YOUTUBEMUSIC".into()], ..Default::default() };
-        assert_eq!(provider_order(&s), vec![ProviderId::LrcLib]);
+        let s = LyricsSettings { provider_order: vec!["LRCLIB".into(), "PAXSENIX".into(), "YOUTUBEMUSIC".into()], ..Default::default() };
+        assert_eq!(provider_order(&s), vec![ProviderId::LrcLib, ProviderId::YouTubeMusic]);
         let empty = LyricsSettings::default();
         assert!(!provider_order(&empty).is_empty());
         assert!(provider_order(&empty).iter().all(|p| p.implemented()));
