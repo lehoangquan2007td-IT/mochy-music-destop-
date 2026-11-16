@@ -2,11 +2,15 @@
 //!
 //! Contract for mochy-app: [`fetch`] with a provider order. Providers are
 //! queried in parallel with a per-provider timeout (35 s, spec §3.3), scored
-//! and the best is returned. MVP implements the network providers that don't
-//! require the InnerTube client: BetterLyrics, YouLyPlus, Paxsenix, LrcRed,
-//! SimpMusic, LrcLib, Deezer, NetEase, QQMusic, Kugou. The three
-//! YouTube-based providers are declared but skipped in MVP. Paxsenix is ported but
-//! disabled by default because its service is down (see [`ProviderId::implemented`]).
+//! and the best is returned. Implemented: BetterLyrics, YouLyPlus, Paxsenix, LrcRed,
+//! SimpMusic, LrcLib, Deezer, YouTubeSubtitle (transcript), YouTubeMusic (lyrics tab), NetEase,
+//! QQMusic, Kugou and YouTubeCaptions (auto captions, last resort). The YouTube sources use
+//! [`FetchConfig::ytm`] (or a shared fallback client). Paxsenix is ported but disabled by
+//! default because its service is down (see [`ProviderId::implemented`]).
+//!
+//! Extras: [`embedded`] (lyrics in local files' tags / sidecar `.lrc`), [`romanize`]
+//! (Japanese/Korean/Chinese/Cyrillic/Hindi/Punjabi readings) and [`translate`] (keyless
+//! Google Translate).
 //!
 //! `Lyrics::provider` is the provider's [`ProviderId::display_name`].
 //!
@@ -20,10 +24,13 @@ use futures::future::join_all;
 use mochy_core::models::TrackMeta;
 use thiserror::Error;
 
+pub mod embedded;
 mod lrc;
 mod providers;
+pub mod romanize;
 pub mod script;
 pub mod select;
+pub mod translate;
 mod ttml;
 mod xml;
 
@@ -180,10 +187,6 @@ impl ProviderId {
     /// called through [`fetch_from_provider`] or an explicit `FetchConfig::order`.
     pub fn implemented(self) -> bool {
         match self {
-            // Need the InnerTube client (owned by mochy-innertube); not ported here.
-            ProviderId::YouTubeSubtitle
-            | ProviderId::YouTubeMusic
-            | ProviderId::YouTubeCaptions => false,
             // Ported (providers/paxsenix.rs), but lyrics.paxsenix.org is down: every request
             // answered HTTP 502, or a Cloudflare "Attention Required" 403 challenge page, for
             // all test songs on 2026-11-16. Re-enable once the service is back.
@@ -212,6 +215,9 @@ pub struct FetchConfig {
     pub order: Vec<ProviderId>,
     /// Per-provider timeout (spec: 35 s).
     pub timeout: Duration,
+    /// InnerTube client for the YouTube sources (locale + visitor data shared with the app).
+    /// `None` = a shared client of this crate's own.
+    pub ytm: Option<mochy_innertube::YtmClient>,
 }
 
 impl Default for FetchConfig {
@@ -223,6 +229,7 @@ impl Default for FetchConfig {
                 .filter(|p| p.implemented())
                 .collect(),
             timeout: Duration::from_secs(35),
+            ytm: None,
         }
     }
 }
@@ -290,9 +297,9 @@ async fn fetch_candidate(
 /// and returns the winner.
 ///
 /// Like Android, YouTube's auto captions are only asked when nothing else had lyrics.
-/// Providers in `cfg.order` that aren't ported (YouTube-based) simply return nothing.
 pub async fn fetch(meta: &TrackMeta, cfg: &FetchConfig, http: &reqwest::Client) -> Option<Lyrics> {
-    let q = providers::Query::from_meta(meta);
+    let mut q = providers::Query::from_meta(meta);
+    q.ytm = cfg.ytm.clone();
     let mut order: Vec<ProviderId> = Vec::new();
     for p in &cfg.order {
         if !order.contains(p) {
@@ -323,7 +330,7 @@ pub async fn fetch(meta: &TrackMeta, cfg: &FetchConfig, http: &reqwest::Client) 
 }
 
 /// Fetch from a single provider (used by tests and the "pick provider" UI).
-/// `Ok(None)` when the provider has no lyrics for the track (or isn't ported).
+/// `Ok(None)` when the provider has no lyrics for the track.
 pub async fn fetch_from_provider(
     meta: &TrackMeta,
     provider: ProviderId,

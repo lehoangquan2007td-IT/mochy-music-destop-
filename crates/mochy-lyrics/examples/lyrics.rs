@@ -5,9 +5,12 @@
 //! ```
 //!
 //! - with a provider id (`LRCLIB`, `BetterLyrics`, …): prints that provider's result;
-//! - without one (or `all`): asks every ported provider (including ones disabled by default)
-//!   one by one, prints a summary table, then runs the real [`mochy_lyrics::fetch`] with the
-//!   default config and prints the winner.
+//! - without one (or `all`): asks every ported provider (including ones disabled by default;
+//!   the YouTube ones only with a `video_id`) one by one, prints a summary table, then runs the
+//!   real [`mochy_lyrics::fetch`] with the default config and prints the winner.
+//!
+//! The first lines of the result are also romanized (when the song is in a romanizable script)
+//! and, with `TRANSLATE=<lang>` set (e.g. `TRANSLATE=vi`), translated with Google Translate.
 
 use std::time::{Duration, Instant};
 
@@ -47,6 +50,32 @@ fn print_lines(l: &Lyrics, n: usize) {
     }
 }
 
+/// Romanization (always, when the script has one) and translation (`TRANSLATE=<lang>`) of
+/// the first lines.
+async fn extras(l: &Lyrics, http: &reqwest::Client) {
+    let texts: Vec<&str> = l.lines.iter().map(|x| x.text.as_str()).take(8).collect();
+    let all: Vec<&str> = l.lines.iter().map(|x| x.text.as_str()).collect();
+    if let Some(lang) = mochy_lyrics::romanize::song_language(&all.join(" ")) {
+        println!("--- romanized ({lang:?}) ---");
+        for (t, r) in texts.iter().zip(mochy_lyrics::romanize::romanize_song(&texts, |_| true)) {
+            println!("    {t}
+      → {}", r.unwrap_or_default());
+        }
+    }
+    if let Ok(tl) = std::env::var("TRANSLATE") {
+        match mochy_lyrics::translate::translate_song(http, &texts, &tl, "auto").await {
+            Some(tr) => {
+                println!("--- translated → {tl} ---");
+                for (t, x) in texts.iter().zip(tr) {
+                    println!("    {t}
+      ⇒ {}", x.unwrap_or_default());
+                }
+            }
+            None => println!("--- translation failed ---"),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -74,12 +103,13 @@ async fn main() {
             .iter()
             .copied()
             .filter(|p| {
-                !matches!(
-                    p,
-                    ProviderId::YouTubeSubtitle
-                        | ProviderId::YouTubeMusic
-                        | ProviderId::YouTubeCaptions
-                )
+                meta.video_id.is_some()
+                    || !matches!(
+                        p,
+                        ProviderId::YouTubeSubtitle
+                            | ProviderId::YouTubeMusic
+                            | ProviderId::YouTubeCaptions
+                    )
             })
             .collect()
     } else {
@@ -121,6 +151,7 @@ async fn main() {
                     println!("{:<14} OK {} ({dt:.1}s){enabled}", p.id(), summary(&l));
                     if providers.len() == 1 {
                         print_lines(&l, 12);
+                        extras(&l, &http).await;
                         println!(
                             "--- raw (first 600 chars) ---\n{}",
                             raw.chars().take(600).collect::<String>()
@@ -148,6 +179,7 @@ async fn main() {
                     t0.elapsed().as_secs_f32()
                 );
                 print_lines(&l, 4);
+                extras(&l, &http).await;
                 assert!(l.sync != SyncKind::None);
             }
             None => println!("== fetch(): no lyrics ({:.1}s)", t0.elapsed().as_secs_f32()),

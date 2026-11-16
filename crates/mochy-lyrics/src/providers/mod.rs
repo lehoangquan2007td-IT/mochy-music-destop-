@@ -22,6 +22,7 @@ pub(crate) mod paxsenix;
 pub(crate) mod qqmusic;
 pub(crate) mod simpmusic;
 pub(crate) mod youlyplus;
+pub(crate) mod youtube;
 
 /// "says who's asking so the server owner can reach us instead of blocking us"
 pub(crate) const MOCHY_UA: &str = "Mochy (+https://github.com/realidkroo/Mochy-Music)";
@@ -37,6 +38,8 @@ pub(crate) struct Query {
     /// Whole seconds, -1 when unknown.
     pub duration: i32,
     pub album: Option<String>,
+    /// InnerTube client for the YouTube sources (a shared fallback one when `None`).
+    pub ytm: Option<mochy_innertube::YtmClient>,
 }
 
 impl Query {
@@ -51,6 +54,7 @@ impl Query {
                 .map(|d| d.round() as i32)
                 .unwrap_or(-1),
             album: meta.album.clone(),
+            ytm: None,
         }
     }
 }
@@ -140,8 +144,7 @@ pub(crate) async fn get_ok(
     Ok(body)
 }
 
-/// Dispatch to one provider. YouTube-based providers are not implemented here (they need
-/// the InnerTube client) and return `Ok(None)`.
+/// Dispatch to one provider.
 pub(crate) async fn fetch_raw(
     provider: ProviderId,
     q: &Query,
@@ -158,9 +161,9 @@ pub(crate) async fn fetch_raw(
         ProviderId::NetEase => netease::get_lyrics(http, q).await?,
         ProviderId::QQMusic => qqmusic::get_lyrics(http, q).await?,
         ProviderId::Kugou => kugou::get_lyrics(http, q).await?,
-        ProviderId::YouTubeSubtitle | ProviderId::YouTubeMusic | ProviderId::YouTubeCaptions => {
-            None
-        }
+        ProviderId::YouTubeMusic => youtube::music_lyrics(q).await?,
+        ProviderId::YouTubeSubtitle => youtube::transcript(q).await?,
+        ProviderId::YouTubeCaptions => youtube::captions(q).await?,
     };
     Ok(raw.filter(|r| !r.trim().is_empty()))
 }
