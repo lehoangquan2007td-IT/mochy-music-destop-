@@ -24,6 +24,9 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::Value;
 use thiserror::Error;
 
+mod offline;
+pub use offline::{DownloadRow, EditedArtist, KIND_CACHE, KIND_DOWNLOAD, SongEdit};
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("sqlite: {0}")]
@@ -401,6 +404,8 @@ fn upsert_song_in(conn: &Connection, song: &Song) -> StorageResult<()> {
             params![song.id, album_id],
         )?;
     }
+    // A hand edit (song_edit) outlives every refresh from YouTube.
+    offline::reapply_song_edit_in(conn, &song.id)?;
     Ok(())
 }
 
@@ -497,6 +502,7 @@ impl Db {
             "UPDATE song SET totalPlayTime = CAST(totalPlayTime * 1000 AS INTEGER) WHERE typeof(totalPlayTime) = 'real';
              UPDATE event SET playTime = CAST(playTime * 1000 AS INTEGER) WHERE typeof(playTime) = 'real';",
         )?;
+        offline::migrate(&conn)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self { conn: Mutex::new(conn) })
     }
