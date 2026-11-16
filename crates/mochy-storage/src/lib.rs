@@ -26,6 +26,8 @@ use thiserror::Error;
 
 mod offline;
 pub use offline::{DownloadRow, EditedArtist, KIND_CACHE, KIND_DOWNLOAD, SongEdit};
+mod song_tuning;
+pub use song_tuning::SongTuningRow;
 
 #[derive(Debug, Error)]
 pub enum StorageError {

@@ -193,4 +193,5 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, side: Option<SideTab>) {
     if let Some(f) = &now.format {
         ui.painter().text(pos2(crect.right(), crect.bottom() + 2.0), Align2::RIGHT_BOTTOM, f, FontId::proportional(9.5), widgets::TEXT_FAINT);
     }
+    crate::ui::transitions_ui::bar_indicator(ui, cx, crect);
 }

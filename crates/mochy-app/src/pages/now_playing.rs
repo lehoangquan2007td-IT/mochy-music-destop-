@@ -312,6 +312,7 @@ pub fn expanded(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, tab: &mu
             });
         }
         crate::pages::player_styles::stream_info_button(ui, cx);
+        crate::ui::transitions_ui::now_playing_controls(ui, cx);
     });
 
     let body = Rect::from_min_max(pos2(rect.left() + 32.0, rect.top() + 64.0), pos2(rect.right() - 32.0, rect.bottom() - 24.0));

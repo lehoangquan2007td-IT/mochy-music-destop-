@@ -98,6 +98,11 @@ pub fn run(rt: tokio::runtime::Handle, query: &str, secs: u64) -> i32 {
     let cfg = CtlCfg { auto_skip: true, persistent_queue: false, ..Default::default() };
     let mut ctl = PlayerController::new(Some(svc.clone()), engine, cfg);
     ctl.set_volume(0.35);
+    // MOCHY_SMOKE_TRANSITION=gapless|crossfade|crossmix: jump near the end and watch the hand-over
+    let transition = std::env::var("MOCHY_SMOKE_TRANSITION").ok();
+    if let (Some(m), Some(e)) = (&transition, ctl.engine()) {
+        crate::controller::apply_transition_settings(e, &crate::controller::smoke_transition_settings(m));
+    }
     ctl.play_with_radio(first);
 
     let deadline = Instant::now() + Duration::from_secs(secs.max(3) + 30);
@@ -107,7 +112,8 @@ pub fn run(rt: tokio::runtime::Handle, query: &str, secs: u64) -> i32 {
     let mut last_activity = Instant::now();
     // Scripted transport checks: (secs after start, action). Seek far forward,
     // seek back, then skip to the (prefetched) next track.
-    let script: [(u64, &str); 3] = [(6, "seek150"), (11, "seek30"), (16, "next")];
+    let script: Vec<(u64, &str)> =
+        if transition.is_some() { vec![(12, "seekend")] } else { vec![(6, "seek150"), (11, "seek30"), (16, "next")] };
     let mut script_i = 0usize;
     let mut seek_at: Option<(Instant, f64)> = None;
     loop {
@@ -120,6 +126,12 @@ pub fn run(rt: tokio::runtime::Handle, query: &str, secs: u64) -> i32 {
                     tracing::info!("smoke: seeking to 150 s");
                     ctl.seek(150.0);
                     seek_at = Some((Instant::now(), 150.0));
+                }
+                "seekend" => {
+                    let target = (ctl.duration.unwrap_or(200.0) - 40.0).max(0.0);
+                    tracing::info!(target, "smoke: seeking near the end for the hand-over");
+                    ctl.seek(target);
+                    seek_at = Some((Instant::now(), target));
                 }
                 "seek30" => {
                     tracing::info!("smoke: seeking back to 30 s");

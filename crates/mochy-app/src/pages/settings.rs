@@ -6,7 +6,7 @@ use egui::{Color32, RichText, Ui};
 use mochy_core::settings::{AppSettings, AudioQuality, Language};
 use mochy_lyrics::ProviderId;
 
-use crate::ui::i18n::{self, tr};
+use crate::ui::i18n::tr;
 use crate::widgets::{self, TEXT, TEXT_DIM};
 
 pub enum SettingsEvent {
@@ -82,8 +82,6 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
         ui.checkbox(&mut s.playback.audio_normalization, tr("Normalize volume (YouTube loudness)"));
         ui.checkbox(&mut s.audio_lab.normalize_replay_gain, tr("Use ReplayGain tags for local files"));
         ui.checkbox(&mut s.playback.auto_skip_next_on_error, tr("Skip to the next song when a stream fails"));
-        ui.checkbox(&mut s.playback.skip_silence, tr("Skip silence"));
-        hint(ui, tr("Skip silence is saved but not yet applied by the desktop audio engine."));
         ui.checkbox(&mut s.misc.persistent_queue, tr("Restore the queue on startup"));
         ui.separator();
         ui.horizontal(|ui| {
@@ -118,6 +116,8 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
             }
         });
     });
+
+    crate::ui::transitions_ui::transitions_section(ui, s);
 
     // ---- Appearance ----------------------------------------------------------
     group(ui, tr("Appearance"), |ui| {

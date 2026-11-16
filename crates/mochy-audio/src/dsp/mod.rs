@@ -4,6 +4,7 @@
 //! thread), so it can run inside the real-time output callback.
 
 mod biquad;
+pub mod fade;
 pub(crate) mod chain;
 mod gain;
 mod limiter;
@@ -15,6 +16,7 @@ mod stretch;
 
 pub use biquad::{Biquad, EqDesign, EqProcessor};
 pub use chain::{ChainParams, LoudnessParams, OutputChain};
+pub use fade::Fader;
 pub use gain::{parse_replay_gain_number, replay_gain_factor, volume_curve_gain};
 pub use limiter::PeakLimiter;
 pub use loudness::LoudnessProcessor;

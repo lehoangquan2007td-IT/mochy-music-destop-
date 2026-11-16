@@ -173,12 +173,14 @@ impl MochyApp {
                 e.send(mochy_audio::Command::SetOutputDevice { name: settings.playback.output_device.clone() });
             }
             apply_audio_lab(e, &settings.audio_lab);
+            crate::controller::apply_transition_settings(e, &settings);
         }
 
         let mut player = PlayerController::new(Some(svc.clone()), engine, CtlCfg::from_settings(&settings));
         player.set_volume(settings.playback.player_volume);
         player.set_repeat(settings.playback.repeat_mode);
         player.set_shuffle(settings.playback.shuffle_mode);
+        player.load_song_tunings();
         if settings.misc.persistent_queue {
             player.request_restore();
         }
@@ -407,7 +409,7 @@ impl MochyApp {
     fn on_msg(&mut self, ctx: &egui::Context, msg: AppMsg) {
         match msg {
             AppMsg::Engine(ev) => {
-                if matches!(ev, mochy_audio::Event::Finished) {
+                if matches!(ev, mochy_audio::Event::Finished | mochy_audio::Event::NextStarted { .. }) {
                     // History changed.
                     self.refresh_library_soon();
                 }
@@ -719,6 +721,7 @@ impl MochyApp {
                     });
                 }
             }
+            Action::Transitions(t) => crate::ui::transitions_ui::apply(&mut self.player, &mut self.settings, t),
         }
     }
 
@@ -906,6 +909,9 @@ impl MochyApp {
             self.settings_dirty = Some(Instant::now());
             self.player.cfg = CtlCfg::from_settings(&self.settings);
             crate::downloads::on_settings(&self.settings);
+            if let Some(e) = self.player.engine() {
+                crate::controller::apply_transition_settings(e, &self.settings);
+            }
             if old.audio_lab.normalize_replay_gain != self.settings.audio_lab.normalize_replay_gain
                 || old.audio_lab.normalize_preamp_db != self.settings.audio_lab.normalize_preamp_db
             {
@@ -1362,6 +1368,7 @@ impl eframe::App for MochyApp {
         self.shortcuts(&ctx);
         self.window_housekeeping(&ctx);
         self.theme_housekeeping(&ctx);
+        crate::ui::transitions_ui::set_snapshot(self.player.transition_snapshot(&self.settings));
         self.draw(ui);
         self.handle_dialog(&ctx);
         // Song editing (songedit): edit window, then refresh what an edit touched.

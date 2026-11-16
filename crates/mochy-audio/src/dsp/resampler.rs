@@ -168,7 +168,9 @@ impl SincResampler {
             self.pos = (half.ceil() + 2.0).floor();
         }
         self.hist.extend_from_slice(input);
-        if input_done && !self.flushed {
+        // a bit-exact pass-through has no filter tail: padding it would put
+        // a few ms of silence between gapless tracks
+        if input_done && !self.flushed && (self.engaged || self.step != 1.0) {
             self.flushed = true;
             let (half, _) = self.geometry_max();
             let pad = (half.ceil() as usize + 2) * channels;
