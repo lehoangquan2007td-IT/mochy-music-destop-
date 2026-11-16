@@ -2777,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-app"
-version = "0.2.0"
+version = "0.1.6"
 dependencies = [
  "dirs",
  "eframe",
@@ -2807,7 +2807,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-audio"
-version = "0.2.0"
+version = "0.1.6"
 dependencies = [
  "cpal",
  "mochy-core",
@@ -2821,7 +2821,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-core"
-version = "0.2.0"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -2830,7 +2830,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-download"
-version = "0.2.0"
+version = "0.1.6"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -2847,7 +2847,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-importer"
-version = "0.2.0"
+version = "0.1.6"
 dependencies = [
  "base64 0.22.1",
  "mochy-core",
@@ -2865,7 +2865,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-innertube"
-version = "0.2.0"
+version = "0.1.6"
 dependencies = [
  "mochy-core",
  "rand 0.10.3",
@@ -2878,7 +2878,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-integrations"
-version = "0.2.0"
+version = "0.1.6"
 dependencies = [
  "form_urlencoded",
  "md-5",
@@ -2892,7 +2892,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-lyrics"
-version = "0.2.0"
+version = "0.1.6"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -2912,7 +2912,7 @@ dependencies = [
 
 [[package]]
 name = "mochy-storage"
-version = "0.2.0"
+version = "0.1.6"
 dependencies = [
  "dirs",
  "mochy-core",

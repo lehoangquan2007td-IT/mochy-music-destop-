@@ -1,6 +1,7 @@
 /target
 Cargo.lock.bak
 *.tmp
+*.zip
 .DS_Store
 crates/mochy-app/assets/*.png
 /.claude/
