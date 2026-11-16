@@ -1,4 +1,35 @@
-# Mochy Music — Desktop (Rust)
+# 🎵 Mochy Music — Desktop (Rust)
+
+<div align="center">
+
+**Bản desktop Windows của [Mochy Music](https://github.com/realidkroo/mochy-music) (Android) — thuần Rust, không Electron/WebView.**
+
+### ⬇️ TẢI BẢN MỚI NHẤT (.exe) — CHỈ 1 CLICK
+
+[![Download](https://img.shields.io/badge/⬇️_Tải_mochy--app.exe-v0.1.0-2ea44f?style=for-the-badge&logo=github)](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.0/mochy-music-desktop-v0.1.0-windows-x64.zip)
+
+[![Latest release](https://img.shields.io/github/v/release/lehoangquan2007td-IT/mochy-music-destop-)](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest)
+[![License](https://img.shields.io/github/license/lehoangquan2007td-IT/mochy-music-destop-)](LICENSE)
+
+*Tiếng Anh: [Download the latest .exe from Releases](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest) — no installer needed.*
+
+</div>
+
+## 📥 Hướng dẫn tải về nhanh (Windows 10/11 x64)
+
+1. Bấm nút **⬇️ Tải** ở trên (hoặc vào **[Releases](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest)**) → nhận file `mochy-music-desktop-v0.1.0-windows-x64.zip` (~11 MB).
+2. Giải nén → chạy **`mochy-app.exe`**. Không cần cài đặt, không cần runtime nào thêm.
+3. Xong! Dữ liệu app nằm trong `%LOCALAPPDATA%\MochyMusic`.
+
+| Bản phát hành | Ngày | Gói tải về | SHA-256 |
+|---|---|---|---|
+| **v0.1.0** (mới nhất) | 16/11/2026 | [mochy-music-desktop-v0.1.0-windows-x64.zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.0/mochy-music-desktop-v0.1.0-windows-x64.zip) | `C7EB5F601619B0F2ED0AAAC962B9FD38986134C68EBDF3CD2F17C874B3851C04` |
+
+> 💡 Link **[releases/latest](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest)** luôn trỏ về bản mới nhất — ghi bookmark để cập nhật khi có phiên bản sau.
+
+---
+
+## Giới thiệu
 
 Desktop port of [Mochy Music](https://github.com/realidkroo/mochy-music) (Android,
 GPL-3.0) written in **pure Rust** (no Node/Electron): `egui` GUI, `symphonia` +
@@ -8,7 +39,7 @@ GPL-3.0) written in **pure Rust** (no Node/Electron): `egui` GUI, `symphonia` +
 > synced lyrics and the Audio Lab all work end to end. See "Known limitations".
 > `docs/PORT_SPEC.md` is the port specification extracted from the Android sources.
 
-## Features
+## ✨ Features
 
 - **YouTube Music**: Home shelves, search (suggestions, history, songs/videos/albums/artists/playlists),
   album / artist / playlist pages, radio autoplay when the queue ends, next-track prefetch.
@@ -28,7 +59,7 @@ GPL-3.0) written in **pure Rust** (no Node/Electron): `egui` GUI, `symphonia` +
   OS media keys / Windows SMTC, keyboard shortcuts (Space, Ctrl+←/→, ←/→, Ctrl+↑/↓, Ctrl+F),
   remembers window size. Inter font (Vietnamese OK) + system CJK/Korean/Thai fallbacks.
 
-## Crates
+## 🧩 Crates
 
 | Crate | Role |
 |---|---|
@@ -39,7 +70,7 @@ GPL-3.0) written in **pure Rust** (no Node/Electron): `egui` GUI, `symphonia` +
 | `mochy-storage` | SQLite (Room-v43-compatible schema), lenient/atomic settings, cache paths |
 | `mochy-app` | eframe/egui desktop app |
 
-## Build & run
+## 🔧 Build & run
 
 ```powershell
 # Windows (MSYS2 gcc toolchain, no Visual Studio needed)
@@ -60,7 +91,7 @@ Data lives in `%LOCALAPPDATA%\MochyMusic` (`mochy.db`, `settings.json`, `logs\mo
 - `cargo run -p mochy-audio --example play -- <path-or-url> [secs]`.
 - `cargo run -p mochy-app --example widgets_demo` — Audio Lab / lyrics / theme widgets standalone.
 
-## Known limitations
+## ⚠️ Known limitations
 
 - YouTube streams come from a single client (VISIONOS, no PoToken). YouTube intermittently
   refuses it ("stream cut off" / bot check); playback then fails until it recovers. Auto-skip
@@ -70,5 +101,8 @@ Data lives in `%LOCALAPPDATA%\MochyMusic` (`mochy.db`, `settings.json`, `logs\mo
   Shazam, AutoEq database browser, romanized lyrics, non-Flagship player styles.
 - "Low" quality uses HE-AAC; symphonia decodes only the LC core (sounds muffled) — use Auto/Medium.
 
-License: GPL-3.0-or-later (inherited from Mochy Music). Not affiliated with
-YouTube/Google.
+---
+
+## 📄 License
+
+GPL-3.0-or-later (inherited from Mochy Music). Not affiliated with YouTube/Google.
