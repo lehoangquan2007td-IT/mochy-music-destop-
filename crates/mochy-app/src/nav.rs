@@ -7,10 +7,25 @@ pub enum LibTab {
     History,
     MostPlayed,
     Local,
+    // ---- library/explore/stats ----
+    Songs,
+    Albums,
+    Artists,
+    RecentlyAdded,
 }
 
 impl LibTab {
-    pub const ALL: [LibTab; 5] = [LibTab::Liked, LibTab::Playlists, LibTab::History, LibTab::MostPlayed, LibTab::Local];
+    pub const ALL: [LibTab; 9] = [
+        LibTab::Songs,
+        LibTab::Liked,
+        LibTab::Albums,
+        LibTab::Artists,
+        LibTab::Playlists,
+        LibTab::RecentlyAdded,
+        LibTab::History,
+        LibTab::MostPlayed,
+        LibTab::Local,
+    ];
     pub fn label(self) -> &'static str {
         crate::ui::i18n::tr(match self {
             LibTab::Liked => "Liked songs",
@@ -18,6 +33,10 @@ impl LibTab {
             LibTab::History => "History",
             LibTab::MostPlayed => "Most played",
             LibTab::Local => "Local files",
+            LibTab::Songs => "Songs",
+            LibTab::Albums => "Albums",
+            LibTab::Artists => "Artists",
+            LibTab::RecentlyAdded => "Recently added",
         })
     }
 }
@@ -33,17 +52,34 @@ pub enum Route {
     Playlist(String),
     AudioLab,
     Settings,
+    // ---- library/explore/stats ----
+    Explore,
+    MoodsGenres,
+    Charts,
+    NewReleases,
+    /// Generic YouTube Music browse page (genre / mood page, "see all").
+    Browse { id: String, params: Option<String> },
+    /// "See all" of an artist page shelf.
+    ArtistMore { artist: String, title: String },
+    /// Full list of a home shelf (`"quick_picks"`, `"recent"`, `"yt:<index>"`…).
+    HomeSection(String),
+    /// Artist / album page built from the local library (DB).
+    LibraryArtist(String),
+    LibraryAlbum(String),
+    Stats,
 }
 
 impl Route {
     /// Sidebar section the route belongs to.
     pub fn section(&self) -> u8 {
         match self {
-            Route::Home | Route::Album(_) | Route::Artist(_) | Route::Playlist(_) => 0,
+            Route::Home | Route::Album(_) | Route::Artist(_) | Route::Playlist(_) | Route::ArtistMore { .. } | Route::HomeSection(_) => 0,
             Route::Search => 1,
-            Route::Library(_) | Route::LocalPlaylist(_) => 2,
+            Route::Library(_) | Route::LocalPlaylist(_) | Route::LibraryArtist(_) | Route::LibraryAlbum(_) => 2,
             Route::AudioLab => 3,
             Route::Settings => 4,
+            Route::Explore | Route::MoodsGenres | Route::Charts | Route::NewReleases | Route::Browse { .. } => 5,
+            Route::Stats => 6,
         }
     }
 }

@@ -10,6 +10,7 @@
 
 mod actions;
 mod app;
+mod browse;
 mod controller;
 mod db;
 mod images;

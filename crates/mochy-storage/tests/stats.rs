@@ -154,6 +154,12 @@ fn history_events_and_removal() {
     let t = TempDir::new("history");
     let db = t.db();
     seeded(&db);
+    // "a" was played 3 times, last at T0 + 1 day + 1 h.
+    let ff: Vec<String> = db.forgotten_favorites(T0 + 10 * DAY, 10).unwrap().into_iter().map(|s| s.id).collect();
+    assert_eq!(ff, ["a"]);
+    assert!(db.forgotten_favorites(T0, 10).unwrap().is_empty());
+    assert!(db.local_utc_offset_secs().unwrap().abs() <= 14 * 3600);
+
     let h = db.history_events(100).unwrap();
     assert_eq!(h.len(), 8);
     assert_eq!(h[0].song.id, "c", "newest first");

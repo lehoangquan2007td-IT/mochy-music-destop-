@@ -35,6 +35,13 @@ pub enum Icon {
     Radio,
     DragHandle,
     Playlist,
+    // ---- library/explore/stats ----
+    Compass,
+    Chart,
+    Grid,
+    ListView,
+    Bookmark,
+    BookmarkFilled,
 }
 
 /// Map unit coordinates (0..1) into `r`.
@@ -276,6 +283,39 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             painter.circle_filled(p(r, 0.64, 0.76), s * 0.1, color);
             seg(p(r, 0.73, 0.76), p(r, 0.73, 0.46));
             seg(p(r, 0.73, 0.46), p(r, 0.86, 0.50));
+        }
+        // ---- library/explore/stats ----
+        Icon::Compass => {
+            let c = p(r, 0.5, 0.5);
+            painter.circle_stroke(c, s * 0.38, st);
+            painter.add(Shape::convex_polygon(vec![p(r, 0.66, 0.34), p(r, 0.56, 0.56), p(r, 0.44, 0.44)], color, Stroke::NONE));
+            painter.add(Shape::convex_polygon(vec![p(r, 0.34, 0.66), p(r, 0.44, 0.44), p(r, 0.56, 0.56)], color.gamma_multiply(0.5), Stroke::NONE));
+        }
+        Icon::Chart => {
+            let cr = s * 0.03;
+            painter.rect_filled(Rect::from_min_max(p(r, 0.16, 0.50), p(r, 0.32, 0.84)), cr, color);
+            painter.rect_filled(Rect::from_min_max(p(r, 0.42, 0.22), p(r, 0.58, 0.84)), cr, color);
+            painter.rect_filled(Rect::from_min_max(p(r, 0.68, 0.38), p(r, 0.84, 0.84)), cr, color);
+        }
+        Icon::Grid => {
+            let cr = s * 0.04;
+            for (x, y) in [(0.16f32, 0.16f32), (0.54, 0.16), (0.16, 0.54), (0.54, 0.54)] {
+                painter.rect_stroke(Rect::from_min_max(p(r, x, y), p(r, x + 0.30, y + 0.30)), cr, st, egui::StrokeKind::Inside);
+            }
+        }
+        Icon::ListView => {
+            for y in [0.26f32, 0.5, 0.74] {
+                painter.circle_filled(p(r, 0.18, y), s * 0.05, color);
+                seg(p(r, 0.32, y), p(r, 0.84, y));
+            }
+        }
+        Icon::Bookmark | Icon::BookmarkFilled => {
+            let pts = vec![p(r, 0.26, 0.14), p(r, 0.74, 0.14), p(r, 0.74, 0.86), p(r, 0.5, 0.66), p(r, 0.26, 0.86)];
+            if icon == Icon::BookmarkFilled {
+                painter.add(Shape::convex_polygon(vec![p(r, 0.26, 0.14), p(r, 0.74, 0.14), p(r, 0.74, 0.86), p(r, 0.5, 0.66)], color, Stroke::NONE));
+                painter.add(Shape::convex_polygon(vec![p(r, 0.26, 0.14), p(r, 0.5, 0.66), p(r, 0.26, 0.86)], color, Stroke::NONE));
+            }
+            painter.add(Shape::closed_line(pts, st));
         }
     }
 }

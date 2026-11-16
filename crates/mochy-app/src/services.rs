@@ -38,6 +38,8 @@ pub enum AppMsg {
     MediaKey(crate::media_keys::MediaKey),
     OutputDevices(Vec<String>),
     Toast(String),
+    // ---- library/explore/stats ----
+    Browse(crate::browse::BrowseMsg),
 }
 
 pub enum LibraryMsg {

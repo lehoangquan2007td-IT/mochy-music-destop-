@@ -48,6 +48,9 @@ pub enum Action {
     ToggleSidePanel(crate::pages::SideTab),
     /// Adjust the current song's lyrics offset (ms delta).
     LyricsOffset(i32),
+    // ---- library/explore/stats ----
+    /// Explore / library / stats intents, handled by `crate::browse::BrowseState`.
+    Browse(crate::browse::BrowseAction),
 }
 
 /// Remote/async data slot.

@@ -1,40 +1,92 @@
-//! Home (spec §7.2): Recently played / Most played from the DB, then YTM
-//! home shelves as horizontal card rows.
+//! Home (port of `HomeScreen.kt` / `HomeViewModel.kt`): greeting, YTM mood
+//! chips, local shelves (Quick picks = most played of the last 30 days,
+//! Recently played, Forgotten favorites, Most played) with "see all", then
+//! the YTM feed (cards / 4-row song grids, "see all" endpoints) with
+//! continuation loading when scrolled to the bottom.
 
 use egui::{RichText, Ui};
 
 use super::Data;
-use crate::actions::{Ctx, LoadState};
+use crate::actions::{Action, Ctx};
+use crate::browse::{BrowseAction, BrowseState, Slot};
+use crate::nav::Route;
 use crate::ui::i18n::tr;
+use crate::widgets::shelves::{self, see_all_action};
 use crate::widgets::{self, TEXT_DIM};
 
 /// Returns `true` when the user asked to retry loading the home feed.
-pub fn show(ui: &mut Ui, cx: &mut Ctx, data: &Data) -> bool {
+pub fn show(ui: &mut Ui, cx: &mut Ctx, data: &Data, st: &BrowseState) -> bool {
     let mut retry = false;
-    widgets::page_title(ui, greeting());
+    widgets::page_title(ui, greeting(st.lib.utc_offset_secs));
 
-    widgets::song_card_row(ui, cx, tr("Recently played"), &data.history, "recent", true);
-    widgets::song_card_row(ui, cx, tr("Most played"), &data.most_played, "most", true);
+    // Mood chips.
+    if !st.home.chips.is_empty() {
+        egui::ScrollArea::horizontal().id_salt("home_chips").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (i, c) in st.home.chips.iter().enumerate() {
+                    let sel = st.home.selected == Some(i);
+                    if widgets::pill(ui, &c.title, sel).clicked() {
+                        cx.act(Action::Browse(BrowseAction::HomeChip(if sel { None } else { Some(i) })));
+                    }
+                }
+            });
+        });
+        ui.add_space(10.0);
+    }
 
-    match &data.home {
-        None | Some(LoadState::Loading) => {
+    if st.home.selected.is_none() {
+        let lib = &st.lib;
+        if !lib.quick_picks.is_empty() {
+            if shelves::section_header(ui, cx, tr("Quick picks"), None, None, true) {
+                cx.act(Action::Navigate(Route::HomeSection("quick_picks".into())));
+            }
+            shelves::song_grid(ui, cx, &lib.quick_picks, None, 4, "home_quick", true);
+            ui.add_space(12.0);
+        }
+        let recent = if lib.recent_songs.is_empty() { &data.history } else { &lib.recent_songs };
+        if !recent.is_empty() {
+            if shelves::section_header(ui, cx, tr("Recently played"), None, None, true) {
+                cx.act(Action::Navigate(Route::HomeSection("recent".into())));
+            }
+            card_row(ui, cx, recent, "recent");
+        }
+        if !lib.forgotten.is_empty() {
+            if shelves::section_header(ui, cx, tr("Forgotten favorites"), None, None, true) {
+                cx.act(Action::Navigate(Route::HomeSection("forgotten".into())));
+            }
+            shelves::song_grid(ui, cx, &lib.forgotten, None, 4, "home_forgotten", true);
+            ui.add_space(12.0);
+        }
+        if !data.most_played.is_empty() {
+            if shelves::section_header(ui, cx, tr("Most played"), None, None, true) {
+                cx.act(Action::Navigate(Route::HomeSection("most".into())));
+            }
+            card_row(ui, cx, &data.most_played, "most");
+        }
+    }
+
+    match &st.home.status {
+        None | Some(Slot::Loading) => {
             ui.add_space(12.0);
             widgets::loading(ui, tr("Loading YouTube Music…"));
         }
-        Some(LoadState::Failed(e)) => {
+        Some(Slot::Failed(e)) => {
             ui.add_space(12.0);
             retry = widgets::error_box(ui, e);
         }
-        Some(LoadState::Ready(shelves)) => {
-            if shelves.is_empty() {
+        Some(Slot::Ready(())) => {
+            if st.home.sections.is_empty() {
                 ui.label(RichText::new(tr("YouTube Music returned no shelves.")).color(TEXT_DIM));
                 retry = ui.button(tr("Reload")).clicked();
             }
-            for (i, shelf) in shelves.iter().enumerate() {
-                if shelf.items.is_empty() {
-                    continue;
-                }
-                widgets::shelf_row(ui, cx, shelf, ("home", i));
+            for (i, sec) in st.home.sections.iter().enumerate() {
+                let see_all = see_all_action(sec).or_else(|| Some(Action::Navigate(Route::HomeSection(format!("yt:{i}")))));
+                shelves::yt_section(ui, cx, sec, ("home", i), see_all);
+            }
+            if st.home.continuation.is_some() && shelves::load_more_sentinel(ui, st.home.loading_more) {
+                cx.act(Action::Browse(BrowseAction::HomeMore));
+            } else if st.home.loading_more {
+                shelves::load_more_sentinel(ui, true);
             }
         }
     }
@@ -42,7 +94,26 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, data: &Data) -> bool {
     retry
 }
 
-fn greeting() -> &'static str {
-    // Local time isn't available without a tz crate; use UTC-free wording.
-    "Listen now"
+fn card_row(ui: &mut Ui, cx: &mut Ctx, songs: &std::sync::Arc<Vec<mochy_core::models::Song>>, salt: &str) {
+    egui::ScrollArea::horizontal().id_salt(("home_row", salt)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            for i in 0..songs.len().min(30) {
+                widgets::song_card(ui, cx, songs, i, true);
+            }
+        });
+    });
+    ui.add_space(12.0);
+}
+
+/// Time-of-day greeting from the local clock.
+fn greeting(utc_offset_secs: i64) -> &'static str {
+    let now = crate::browse::now_ms() / 1000 + utc_offset_secs;
+    let hour = now.rem_euclid(86_400) / 3600;
+    match hour {
+        5..=11 => tr("Good morning"),
+        12..=16 => tr("Good afternoon"),
+        17..=21 => tr("Good evening"),
+        _ => tr("Good night"),
+    }
 }

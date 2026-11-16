@@ -591,6 +591,31 @@ impl Db {
         Ok(self.conn().query_row(&format!("SELECT strftime('%Y-%m-%d', {})", local("?1")), params![ms], |r| r.get(0))?)
     }
 
+    /// Current offset of local time from UTC, in seconds (history grouping).
+    pub fn local_utc_offset_secs(&self) -> StorageResult<i64> {
+        Ok(self.conn().query_row(
+            "SELECT CAST(strftime('%s', 'now', 'localtime') AS INTEGER) - CAST(strftime('%s', 'now') AS INTEGER)",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// "Forgotten favorites" (Android home): songs played at least three
+    /// times overall but not since `before_ms`, most played first.
+    pub fn forgotten_favorites(&self, before_ms: i64, limit: usize) -> StorageResult<Vec<Song>> {
+        let conn = self.conn();
+        query_songs(
+            &conn,
+            &format!(
+                "SELECT {SONG_COLUMNS} FROM song s
+                 JOIN (SELECT songId, COUNT(*) AS plays, MAX(timestamp) AS last FROM event GROUP BY songId) e ON e.songId = s.id
+                 WHERE e.plays >= 3 AND e.last < ?1
+                 ORDER BY e.plays DESC, s.totalPlayTime DESC LIMIT ?2"
+            ),
+            params![before_ms, limit as i64],
+        )
+    }
+
     /// Time of the first recorded play.
     pub fn first_event_time(&self) -> StorageResult<Option<i64>> {
         Ok(self.conn().query_row("SELECT MIN(timestamp) FROM event", [], |r| r.get(0))?)
