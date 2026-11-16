@@ -32,6 +32,8 @@ pub struct SideData<'a> {
     pub related: Option<&'a LoadState<Vec<Song>>>,
     pub lyrics_scale: f32,
     pub lyrics_enabled: bool,
+    /// Global sync compensation (settings), added to the per-song offset.
+    pub lyrics_global_offset_ms: i32,
 }
 
 pub fn tabs(ui: &mut Ui, tab: &mut SideTab) {
@@ -61,7 +63,7 @@ fn lyrics(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, lv: &mut Lyric
         ui.label(RichText::new(tr("Lyrics are turned off in Settings → Lyrics.")).color(TEXT_DIM));
         return;
     }
-    let offset = song.lyrics_offset_ms;
+    let offset = song.lyrics_offset_ms + d.lyrics_global_offset_ms;
     // Offset controls pinned to the bottom, lyrics fill the rest.
     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
         ui.horizontal(|ui| {
@@ -73,8 +75,16 @@ fn lyrics(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, lv: &mut Lyric
             if ui.small_button("+0.5 s").clicked() {
                 cx.act(Action::LyricsOffset(500));
             }
-            if offset != 0 && ui.small_button(tr("Reset")).clicked() {
-                cx.act(Action::LyricsOffset(-offset));
+            if song.lyrics_offset_ms != 0 && ui.small_button(tr("Reset")).clicked() {
+                // Reset only the per-song part — the global offset is a setting, not this song's.
+                cx.act(Action::LyricsOffset(-song.lyrics_offset_ms));
+            }
+            if d.lyrics_global_offset_ms != 0 {
+                ui.label(
+                    RichText::new(format!("· {} {:+} ms", tr("global"), d.lyrics_global_offset_ms))
+                        .size(11.0)
+                        .color(widgets::TEXT_FAINT),
+                );
             }
             if let LyricsState::Loaded(l) = d.lyrics {
                 ui.label(RichText::new(format!("· {}", l.provider)).size(11.0).color(widgets::TEXT_FAINT));
@@ -84,7 +94,10 @@ fn lyrics(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, lv: &mut Lyric
             let scale = d.lyrics_scale.clamp(0.5, 2.5);
             lv.font_size = crate::ui::lyrics_view::LyricsView::default().font_size * scale;
             if let Some(t) = lv.show(ui, d.lyrics, now.pos, offset, cx.accent) {
-                cx.act(Action::Seek(t));
+                // Seek to where the clicked line is active *and* its vocals are
+                // heard now: the same unreported device latency that makes
+                // lyrics run ahead also delays what is heard after a seek.
+                cx.act(Action::Seek(t - offset as f64 / 1000.0));
             }
         });
     });

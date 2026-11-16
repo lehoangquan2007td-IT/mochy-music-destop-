@@ -276,11 +276,15 @@ pub struct LyricsSettings {
     /// Per-song/line offset feedback, ms.
     pub text_size: f32,
     pub line_spacing: f32,
+    /// Sync compensation applied to every song, on top of the per-song offset.
+    /// Negative delays the lyrics — for output devices whose latency the OS
+    /// does not report (Bluetooth, TV, DSP-heavy drivers).
+    pub global_offset_ms: i32,
 }
 
 impl Default for LyricsSettings {
     fn default() -> Self {
-        Self { show: true, provider_order: Vec::new(), text_size: 1.0, line_spacing: 1.0 }
+        Self { show: true, provider_order: Vec::new(), text_size: 1.0, line_spacing: 1.0, global_offset_ms: 0 }
     }
 }
 

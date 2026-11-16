@@ -154,6 +154,20 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
             ui.label(tr("Text size"));
             ui.add(egui::Slider::new(&mut s.lyrics.text_size, 0.6..=2.0).step_by(0.05).suffix("×"));
         });
+        ui.horizontal(|ui| {
+            ui.label(tr("Lyric sync offset (all songs)"));
+            if ui.small_button("−0.5 s").clicked() {
+                s.lyrics.global_offset_ms = (s.lyrics.global_offset_ms - 500).max(-10_000);
+            }
+            ui.label(RichText::new(format!("{:+} ms", s.lyrics.global_offset_ms)).color(TEXT));
+            if ui.small_button("+0.5 s").clicked() {
+                s.lyrics.global_offset_ms = (s.lyrics.global_offset_ms + 500).min(10_000);
+            }
+            if s.lyrics.global_offset_ms != 0 && ui.small_button(tr("Reset")).clicked() {
+                s.lyrics.global_offset_ms = 0;
+            }
+        });
+        hint(ui, tr("Lyrics run ahead of the vocals? Press − to delay them (Bluetooth / TV setups)."));
         ui.label(RichText::new(tr("Providers (top = highest priority)")).color(TEXT));
         provider_editor(ui, s);
     });

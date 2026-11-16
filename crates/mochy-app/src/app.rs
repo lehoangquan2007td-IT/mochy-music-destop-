@@ -1080,6 +1080,7 @@ impl MochyApp {
                     related: related_key.as_ref().and_then(|k| self.data.related.get(k)),
                     lyrics_scale: self.settings.lyrics.text_size,
                     lyrics_enabled: self.settings.lyrics.show,
+                    lyrics_global_offset_ms: self.settings.lyrics.global_offset_ms,
                 };
                 pages::now_playing::expanded(ui, &mut cx, &now, &d, &mut self.np_tab, &mut self.np, &mut self.lyrics_view, grad);
             });
@@ -1134,6 +1135,7 @@ impl MochyApp {
                         related: related_key.as_ref().and_then(|k| self.data.related.get(k)),
                         lyrics_scale: self.settings.lyrics.text_size,
                         lyrics_enabled: self.settings.lyrics.show,
+                        lyrics_global_offset_ms: self.settings.lyrics.global_offset_ms,
                     };
                     pages::now_playing::tab_content(ui, &mut cx, tab, &now, &d, &mut self.np, &mut self.lyrics_view);
                 });
