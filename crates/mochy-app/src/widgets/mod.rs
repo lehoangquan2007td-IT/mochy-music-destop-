@@ -368,6 +368,7 @@ pub fn song_menu(ui: &mut Ui, cx: &mut Ctx, song: &Song, playlist_ctx: Option<&s
             ui.close();
         }
     }
+    crate::downloads::ui::song_menu_items(ui, cx, song);
 }
 
 // ---------------------------------------------------------------------------
@@ -439,7 +440,8 @@ pub fn song_row(ui: &mut Ui, cx: &mut Ctx, list: &Arc<Vec<Song>>, idx: usize, op
     if song.explicit {
         title.push_str("  🅴");
     }
-    paint_text(ui, pos2(x, cy - 18.0), &title, FontId::proportional(14.5), title_color, text_w);
+    let title_rect = paint_text(ui, pos2(x, cy - 18.0), &title, FontId::proportional(14.5), title_color, text_w);
+    crate::downloads::ui::row_badge(ui, Rect::from_center_size(pos2(title_rect.right() + 12.0, title_rect.center().y), Vec2::splat(14.0)), &song.id, cx.accent);
     let artist_text = artists_line(song);
     let ar = paint_text(ui, pos2(x, cy + 2.0), &artist_text, FontId::proportional(12.5), TEXT_DIM, text_w);
     if let Some(aid) = song.artists.iter().find_map(|a| a.id.clone()) {

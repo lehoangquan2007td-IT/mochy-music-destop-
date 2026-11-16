@@ -74,6 +74,10 @@ impl ImageSrc {
 /// Image source for a song's artwork.
 pub fn song_src(song: &Song) -> Option<ImageSrc> {
     if let Some(u) = song.thumbnail_url.as_deref().filter(|u| !u.is_empty()) {
+        // A picture picked in "Edit song" (songedit) is a file:// cover.
+        if let Some(p) = crate::songedit::file_url_path(u) {
+            return Some(ImageSrc::Local(p));
+        }
         return Some(ImageSrc::Url(u.to_string()));
     }
     song.local_path.as_ref().map(|p| ImageSrc::Local(p.clone()))
@@ -281,6 +285,11 @@ fn crop_black_bars(img: image::DynamicImage) -> image::DynamicImage {
 /// Embedded artwork bytes of a local audio file (or a sidecar cover image).
 pub fn local_artwork(path: &Path) -> Option<Vec<u8>> {
     use lofty::prelude::*;
+    // An image file itself (edited song covers).
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "bmp" | "gif") {
+        return std::fs::read(path).ok();
+    }
     if let Ok(tagged) = lofty::read_from_path(path) {
         let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
         if let Some(pic) = tag.and_then(|t| t.pictures().first()) {

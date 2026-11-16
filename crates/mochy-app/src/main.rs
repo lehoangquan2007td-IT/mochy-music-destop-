@@ -12,6 +12,7 @@ mod actions;
 mod app;
 mod controller;
 mod db;
+mod downloads;
 mod images;
 mod local_scan;
 mod logging;
@@ -22,6 +23,7 @@ mod pages;
 mod queue;
 mod services;
 mod smoke;
+mod songedit;
 mod ui;
 mod widgets;
 

@@ -322,4 +322,7 @@ pub struct AppSettings {
     pub audio_lab: AudioLab,
     pub lyrics: LyricsSettings,
     pub misc: Misc,
+    /// Downloads / offline / stream cache (Settings → Downloads).
+    #[serde(default)]
+    pub downloads: crate::download_settings::DownloadSettings,
 }

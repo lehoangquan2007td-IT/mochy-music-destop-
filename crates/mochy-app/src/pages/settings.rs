@@ -172,6 +172,8 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
         provider_editor(ui, s);
     });
 
+    crate::downloads::ui::settings_section(ui, s);
+
     // ---- Storage ---------------------------------------------------------------
     group(ui, tr("Storage"), |ui| {
         let rows = [

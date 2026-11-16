@@ -2392,6 +2392,7 @@ dependencies = [
  "lofty",
  "mochy-audio",
  "mochy-core",
+ "mochy-download",
  "mochy-innertube",
  "mochy-lyrics",
  "mochy-storage",
@@ -2427,6 +2428,23 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mochy-download"
+version = "0.1.5"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "image",
+ "lofty",
+ "mochy-core",
+ "mochy-innertube",
+ "mochy-lyrics",
+ "regex",
+ "reqwest",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

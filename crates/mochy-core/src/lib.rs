@@ -9,5 +9,6 @@ pub mod error;
 pub mod ids;
 pub mod models;
 pub mod settings;
+pub mod download_settings;
 
 pub use error::{CoreError, Result};

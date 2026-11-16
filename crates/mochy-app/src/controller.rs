@@ -403,7 +403,8 @@ impl PlayerController {
             svc.db.run(move |db| crate::db::ensure_song(db, &s));
         }
 
-        if let Some(path) = song.local_path.clone() {
+        // Downloaded (or stream-cached) songs play from disk instead of streaming.
+        if let Some(path) = song.local_path.clone().or_else(|| crate::downloads::offline_file(&song)) {
             let duration = song.duration_secs;
             let rt = svc.rt.clone();
             rt.spawn(async move {
