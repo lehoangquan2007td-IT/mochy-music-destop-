@@ -809,16 +809,16 @@ mod tests {
     #[test]
     fn japanese_romaji() {
         assert_eq!(romanize_japanese("こんにちは世界"), "konnichiha sekai");
-        let r = romanize_japanese("夜に駆ける");
+        let r = romanize_japanese("夜に走る");
         assert!(r.starts_with("yoru"), "{r}");
-        assert!(r.contains("kake"), "{r}");
+        assert!(r.contains("hashi"), "{r}");
         // katakana loanword + latin kept
         let r = romanize_japanese("ハッピー day");
         assert!(r.starts_with("happii") || r.starts_with("happī") || r.starts_with("happy"), "{r}");
         assert!(r.ends_with("day"), "{r}");
         // small っ at the end of a kakasi chunk doubles the next consonant
-        assert_eq!(romanize_japanese("初めて会った日から"), "hajimete atta nichi kara");
-        assert_eq!(romanize_japanese("その一言で全てが分かった"), "sono hitokoto de subete ga wakatta");
+        assert_eq!(romanize_japanese("昨日会った"), "kinou atta");
+        assert_eq!(romanize_japanese("全部分かった"), "zenbu wakatta");
         assert_eq!(romanize_japanese("ちょっと待って"), "chotto matte");
         // a real つ is left alone
         assert_eq!(romanize_japanese("夏が来た"), "natsu ga kita");
@@ -869,11 +869,11 @@ mod tests {
     #[test]
     fn whole_song_decides_language() {
         // kanji-only line in a Japanese song is still read as Japanese
-        let lines = ["夜に駆ける", "沈むように溶けてゆくように", "二人だけの空"];
+        let lines = ["夜に走る", "海のように青い空", "二つの星"];
         assert_eq!(song_language(&lines.join(" ")), Some(RomanizeLang::Japanese));
         let out = romanize_song(&lines, |_| true);
         assert!(out.iter().all(|o| o.is_some()));
-        assert!(out[2].as_deref().unwrap().contains("futari"), "{:?}", out[2]);
+        assert!(out[2].as_deref().unwrap().contains("hoshi"), "{:?}", out[2]);
 
         let ko = ["사랑해 baby", "", "I love you"];
         let out = romanize_song(&ko, |_| true);

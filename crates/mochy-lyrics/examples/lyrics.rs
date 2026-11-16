@@ -34,6 +34,8 @@ fn summary(l: &Lyrics) -> String {
     )
 }
 
+/// Metadata of the first `n` lines only (timestamps, character / word counts) — never the
+/// lyric text itself.
 fn print_lines(l: &Lyrics, n: usize) {
     for line in l.lines.iter().take(n) {
         let tag = match (&line.agent, line.bg) {
@@ -42,34 +44,33 @@ fn print_lines(l: &Lyrics, n: usize) {
             _ => String::new(),
         };
         println!(
-            "    [{:7.2}]{tag} {}  ({} words)",
+            "    [{:7.2}]{tag} {} chars, {} words",
             line.time,
-            line.text,
+            line.text.chars().count(),
             line.words.len()
         );
     }
 }
 
-/// Romanization (always, when the script has one) and translation (`TRANSLATE=<lang>`) of
-/// the first lines.
+/// Romanization (always, when the script has one) and translation (`TRANSLATE=<lang>`) of the
+/// whole song: prints how many lines got a reading / translation and their sizes, not the text.
 async fn extras(l: &Lyrics, http: &reqwest::Client) {
-    let texts: Vec<&str> = l.lines.iter().map(|x| x.text.as_str()).take(8).collect();
-    let all: Vec<&str> = l.lines.iter().map(|x| x.text.as_str()).collect();
-    if let Some(lang) = mochy_lyrics::romanize::song_language(&all.join(" ")) {
-        println!("--- romanized ({lang:?}) ---");
-        for (t, r) in texts.iter().zip(mochy_lyrics::romanize::romanize_song(&texts, |_| true)) {
-            println!("    {t}
-      → {}", r.unwrap_or_default());
-        }
+    let texts: Vec<&str> = l.lines.iter().map(|x| x.text.as_str()).collect();
+    if let Some(lang) = mochy_lyrics::romanize::song_language(&texts.join(" ")) {
+        let r = mochy_lyrics::romanize::romanize_song(&texts, |_| true);
+        let n = r.iter().flatten().count();
+        let ascii = r.iter().flatten().filter(|x| x.is_ascii()).count();
+        let chars: usize = r.iter().flatten().map(|x| x.chars().count()).sum();
+        println!("--- romanized as {lang:?}: {n}/{} lines ({ascii} pure ASCII, {chars} chars)", texts.len());
+    } else {
+        println!("--- nothing to romanize");
     }
     if let Ok(tl) = std::env::var("TRANSLATE") {
         match mochy_lyrics::translate::translate_song(http, &texts, &tl, "auto").await {
             Some(tr) => {
-                println!("--- translated → {tl} ---");
-                for (t, x) in texts.iter().zip(tr) {
-                    println!("    {t}
-      ⇒ {}", x.unwrap_or_default());
-                }
+                let n = tr.iter().flatten().count();
+                let chars: usize = tr.iter().flatten().map(|x| x.chars().count()).sum();
+                println!("--- translated → {tl}: {n}/{} lines, {chars} chars", texts.len());
             }
             None => println!("--- translation failed ---"),
         }
@@ -152,10 +153,7 @@ async fn main() {
                     if providers.len() == 1 {
                         print_lines(&l, 12);
                         extras(&l, &http).await;
-                        println!(
-                            "--- raw (first 600 chars) ---\n{}",
-                            raw.chars().take(600).collect::<String>()
-                        );
+                        println!("--- raw payload: {} chars", raw.chars().count());
                     } else {
                         print_lines(&l, 2);
                     }

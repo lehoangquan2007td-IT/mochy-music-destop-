@@ -265,6 +265,32 @@ async fn captions_as(ytm: &YtmClient, video_id: &str, client: &clients::ClientSp
     Ok((!lrc.trim().is_empty()).then_some(lrc))
 }
 
+/// The video's caption cues (word-timed for auto captions) from the first client whose
+/// tracks download — for [`crate::autosync`].
+pub(crate) async fn caption_cues(ytm: Option<&YtmClient>, video_id: &str) -> Option<Vec<crate::autosync::CaptionCue>> {
+    let ytm = match ytm {
+        Some(c) => c,
+        None => fallback_client()?,
+    };
+    for c in [&clients::ANDROID_VR_NO_AUTH, &clients::WEB_REMIX] {
+        let Ok(player) = ytm.player(c, video_id).await else { continue };
+        let tracks = caption_tracks(&player);
+        let Some(track) = pick_caption_track(&tracks) else { continue };
+        let Ok(resp) = ytm.http.get(with_fmt_json3(&track.base_url)).header("User-Agent", c.user_agent).timeout(TIMEOUT).send().await else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(body) = resp.text().await else { continue };
+        let cues = crate::autosync::timed_text_to_cues(&body);
+        if !cues.is_empty() {
+            return Some(cues);
+        }
+    }
+    None
+}
+
 /// The video's captions as line-synced lyrics, from the first client whose tracks download.
 pub(crate) async fn captions(q: &Query) -> LyricsResult<Option<String>> {
     let Some(id) = q.video_id.as_deref() else { return Ok(None) };
@@ -294,12 +320,12 @@ mod tests {
     fn transcript_fixture_to_lrc() {
         let json = json!({"actions": [{"updateEngagementPanelAction": {"content": {"transcriptRenderer": {"body": {
             "transcriptBodyRenderer": {"cueGroups": [
-                {"transcriptCueGroupRenderer": {"cues": [{"transcriptCueRenderer": {"cue": {"simpleText": "♪ Never gonna give you up ♪"}, "startOffsetMs": "18800", "durationMs": "2000"}}]}},
-                {"transcriptCueGroupRenderer": {"cues": [{"transcriptCueRenderer": {"cue": {"runs": [{"text": "Never gonna "}, {"text": "let you down"}]}, "startOffsetMs": 61005}}]}}
+                {"transcriptCueGroupRenderer": {"cues": [{"transcriptCueRenderer": {"cue": {"simpleText": "♪ Paper boats on the river ♪"}, "startOffsetMs": "18800", "durationMs": "2000"}}]}},
+                {"transcriptCueGroupRenderer": {"cues": [{"transcriptCueRenderer": {"cue": {"runs": [{"text": "Lanterns drift "}, {"text": "into the night"}]}, "startOffsetMs": 61005}}]}}
             ]}}}}}}]});
         assert_eq!(
             transcript_to_lrc(&json).unwrap(),
-            "[00:18.800]Never gonna give you up\n[01:01.005]Never gonna let you down"
+            "[00:18.800]Paper boats on the river\n[01:01.005]Lanterns drift into the night"
         );
         assert!(transcript_to_lrc(&json!({})).is_none());
     }
@@ -335,10 +361,10 @@ mod tests {
         let body = r#"<?xml version="1.0" encoding="utf-8" ?><timedtext format="3">
 <body>
 <p t="1360" d="1680">[♪♪♪]</p>
-<p t="18640" d="3240">♪ We&#39;re no strangers to love ♪</p>
+<p t="18640" d="3240">♪ We&#39;re counting the stars ♪</p>
 <p t="22640" d="4320"><s>You</s><s t="200"> know</s></p>
 </body></timedtext>"#;
-        assert_eq!(srv3_to_lrc(body), "[00:18.640]We're no strangers to love
+        assert_eq!(srv3_to_lrc(body), "[00:18.640]We're counting the stars
 [00:22.640]You know");
         let old = r#"<transcript><text start="1.5" dur="2">hi &amp; bye</text></transcript>"#;
         assert_eq!(srv3_to_lrc(old), "[00:01.500]hi & bye");

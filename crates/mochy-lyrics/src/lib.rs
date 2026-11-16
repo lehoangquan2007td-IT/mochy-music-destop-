@@ -24,6 +24,7 @@ use futures::future::join_all;
 use mochy_core::models::TrackMeta;
 use thiserror::Error;
 
+pub mod autosync;
 pub mod embedded;
 mod lrc;
 mod providers;
@@ -128,7 +129,8 @@ impl ProviderId {
         ]
     }
 
-    /// Display name (BetterLyrics is shown as "Apple Music" — spec §3.1).
+    /// Display name (BetterLyrics is shown as "Apple Music" — spec §3.1; the YouTube sources
+    /// as Android's `LyricsProviderRegistry.getDisplayName`).
     pub fn display_name(self) -> &'static str {
         match self {
             ProviderId::BetterLyrics => "Apple Music",
@@ -138,12 +140,12 @@ impl ProviderId {
             ProviderId::SimpMusic => "SimpMusic",
             ProviderId::LrcLib => "LrcLib",
             ProviderId::Deezer => "Deezer",
-            ProviderId::YouTubeSubtitle => "YouTubeSubtitle",
-            ProviderId::YouTubeMusic => "YouTubeMusic",
+            ProviderId::YouTubeSubtitle => "YouTube Subtitle",
+            ProviderId::YouTubeMusic => "YouTube Music",
             ProviderId::NetEase => "NetEase",
             ProviderId::QQMusic => "QQMusic",
             ProviderId::Kugou => "Kugou",
-            ProviderId::YouTubeCaptions => "YouTubeCaptions",
+            ProviderId::YouTubeCaptions => "YouTube Auto Captions",
         }
     }
 

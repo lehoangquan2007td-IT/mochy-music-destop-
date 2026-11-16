@@ -58,6 +58,30 @@ pub enum LyricsAlign {
     #[default]
     Left,
     Center,
+    Right,
+}
+
+/// Per-line sub-lines (`None` = nothing under that line).
+pub type SubLines = std::sync::Arc<Vec<Option<String>>>;
+
+/// Readings / translations of the lyrics on screen plus the lyrics display options.
+#[derive(Debug, Clone, Default)]
+pub struct LineExtras {
+    pub opts: mochy_core::settings::LyricsExtras,
+    /// Romanized sub-lines, when shown.
+    pub romanized: Option<SubLines>,
+    /// Translated sub-lines, when shown.
+    pub translated: Option<SubLines>,
+}
+
+/// Where a line goes: primary-voice lines follow the setting, the second duet voice takes the
+/// other side (right, or left when lines are right-aligned).
+fn effective_align(second_voice: bool, align: LyricsAlign) -> LyricsAlign {
+    match (second_voice, align) {
+        (false, a) => a,
+        (true, LyricsAlign::Right) => LyricsAlign::Left,
+        (true, _) => LyricsAlign::Right,
+    }
 }
 
 /// Persistent UI state (scroll animation etc.). One instance per app.
@@ -66,8 +90,13 @@ pub struct LyricsView {
     pub font_size: f32,
     /// Fake depth-of-field: lines far from the active one get a soft ghost.
     pub blur: bool,
-    /// Alignment of primary-voice lines (second duet voice is always right).
+    /// Alignment of primary-voice lines (the second duet voice takes the other side).
     pub align: LyricsAlign,
+    /// Gap between lines, × the default (Settings → Lyrics → Line spacing).
+    pub line_spacing: f32,
+    /// Translation / romanization for the lyrics on screen + display options (pushed in by
+    /// the app's lyrics-extras engine every frame).
+    pub extras: LineExtras,
     scroll: f32,
     manual_until: f64,
     snap_next: bool,
@@ -81,6 +110,8 @@ impl Default for LyricsView {
             font_size: 30.0,
             blur: true,
             align: LyricsAlign::Left,
+            line_spacing: 1.0,
+            extras: Default::default(),
             scroll: 0.0,
             manual_until: f64::NEG_INFINITY,
             snap_next: true,
@@ -117,6 +148,60 @@ struct Item {
     tokens: Vec<Token>,
     row_h: f32,
     width: f32,
+    /// Translation / romanization (or the original, when the reading is the line) under it.
+    subs: Vec<Sub>,
+}
+
+/// A smaller line under a lyric line.
+#[derive(Debug, Clone)]
+struct Sub {
+    tokens: Vec<Token>,
+    /// Top, relative to the item's top.
+    y: f32,
+    row_h: f32,
+    size: f32,
+    /// Translations are drawn a touch dimmer than readings.
+    translation: bool,
+}
+
+/// What the layout needs besides the lyrics: per-line sub-lines and display options.
+#[derive(Clone, Copy)]
+struct LayoutOpts<'a> {
+    roman: Option<&'a [Option<String>]>,
+    trans: Option<&'a [Option<String>]>,
+    roman_as_main: bool,
+    sub_scale: f32,
+    spacing: f32,
+    weight: mochy_core::settings::LyricsFontWeight,
+}
+
+impl Default for LayoutOpts<'_> {
+    fn default() -> Self {
+        Self {
+            roman: None,
+            trans: None,
+            roman_as_main: false,
+            sub_scale: 0.55,
+            spacing: 1.0,
+            weight: mochy_core::settings::LyricsFontWeight::Bold,
+        }
+    }
+}
+
+/// The lyric line font for the chosen weight.
+fn line_font(ctx: &egui::Context, size: f32, weight: mochy_core::settings::LyricsFontWeight) -> FontId {
+    use mochy_core::settings::LyricsFontWeight as W;
+    let name = match weight {
+        W::Regular => theme::FONT_REGULAR,
+        W::Medium => theme::FONT_MEDIUM,
+        W::Semibold => theme::FONT_SEMIBOLD,
+        W::Bold => theme::FONT_BOLD,
+    };
+    FontId::new(size, theme::family(ctx, name))
+}
+
+fn sub_at<'a>(subs: Option<&'a [Option<String>]>, i: usize) -> Option<&'a str> {
+    subs.and_then(|s| s.get(i)).and_then(|o| o.as_deref()).filter(|t| !t.trim().is_empty())
 }
 
 struct LayoutCache {
@@ -164,7 +249,9 @@ impl LyricsView {
                     self.synced(ui, lyrics, pos_secs, offset_ms, accent)
                 } else {
                     self.reset();
-                    plain(ui, lyrics, self.font_size);
+                    let roman = self.extras.romanized.clone();
+                    let trans = self.extras.translated.clone();
+                    plain(ui, lyrics, self.font_size, roman.as_deref().map(|v| v.as_slice()), trans.as_deref().map(|v| v.as_slice()));
                     None
                 }
             }
@@ -270,7 +357,11 @@ impl LyricsView {
         let click_pos = if resp.clicked() { resp.interact_pointer_pos() } else { None };
         let time = now as f32;
         let fade_zone = (view_h * 0.12).clamp(24.0, 80.0);
-        let font_bold = |size: f32| theme::bold(&ctx, size);
+        let weight = self.extras.opts.font_weight;
+        let font_bold = |size: f32| line_font(&ctx, size, weight);
+        let dim = self.extras.opts.dim_inactive.clamp(0.0, 1.0);
+        let click_to_seek = self.extras.opts.click_to_seek;
+        let align = self.align;
         // Glows (held notes, interlude dots) are tinted with the accent.
         let glow_tint = theme::readable_on_black(accent).lerp_to_gamma(Color32::WHITE, 0.35);
         let mut needs_repaint = animating;
@@ -307,7 +398,7 @@ impl LyricsView {
                     let progress = if active { ((q - start) / (end - start).max(0.01)) as f32 } else { 0.0 };
                     let show = ctx.animate_bool_with_time(resp.id.with(("gap", idx)), active, 0.35);
                     if show > 0.01 {
-                        paint_dots(&painter, item_rect, it, progress, show * edge, time, font_size, self.align, glow_tint);
+                        paint_dots(&painter, item_rect, effective_align(it.right, align), progress, show * edge, time, font_size, glow_tint);
                         needs_repaint |= active || show < 0.99;
                     }
                 }
@@ -320,12 +411,19 @@ impl LyricsView {
                     }
                     let dist = d_items.unsigned_abs() as f32;
                     let base_alpha = if manual { 0.55 } else { (0.40 - 0.05 * dist.min(5.0)).max(0.16) };
+                    // Dim strength: 0.5 = the default look, 0 = inactive lines nearly as bright
+                    // as the active one, 1 = much dimmer.
+                    let base_alpha = if dim <= 0.5 {
+                        base_alpha + (0.85 - base_alpha) * (1.0 - dim / 0.5)
+                    } else {
+                        base_alpha * (1.0 - (dim - 0.5) / 0.5 * 0.6)
+                    };
                     let bg_factor = if line.bg { 0.75 } else { 1.0 };
                     let dim_alpha = base_alpha * bg_factor * edge;
                     let bright_alpha = bg_factor * edge;
                     let scale = 1.0 + 0.045 * h_anim;
 
-                    let hovered = pointer.is_some_and(|p| item_rect.expand2(vec2(pad * 0.6, 4.0)).contains(p));
+                    let hovered = click_to_seek && pointer.is_some_and(|p| item_rect.expand2(vec2(pad * 0.6, 4.0)).contains(p));
                     if hovered {
                         painter.rect_filled(
                             item_rect.expand2(vec2(pad * 0.5, 6.0)),
@@ -335,18 +433,18 @@ impl LyricsView {
                         ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
                     if let Some(p) = click_pos
+                        && click_to_seek
                         && item_rect.expand2(vec2(pad * 0.6, 4.0)).contains(p)
                     {
                         clicked_time = Some(line.time);
                     }
 
                     // Anchor for the scale: the aligned edge.
-                    let anchor_x = if it.right {
-                        item_rect.right()
-                    } else if self.align == LyricsAlign::Center {
-                        item_rect.center().x
-                    } else {
-                        item_rect.left()
+                    let line_align = effective_align(it.right, align);
+                    let anchor_x = match line_align {
+                        LyricsAlign::Right => item_rect.right(),
+                        LyricsAlign::Center => item_rect.center().x,
+                        LyricsAlign::Left => item_rect.left(),
                     };
                     let anchor = pos2(anchor_x, item_rect.center().y);
                     let xf = TSTransform::new(anchor.to_vec2() * (1.0 - scale), scale);
@@ -356,13 +454,7 @@ impl LyricsView {
                     let rise_px = size * 0.07;
                     let row_offset = |row: u32| -> f32 {
                         let row_w = it.tokens.iter().filter(|t| t.row == row).map(|t| t.x + t.w).fold(0.0, f32::max);
-                        if it.right {
-                            it.width - row_w
-                        } else if self.align == LyricsAlign::Center {
-                            (it.width - row_w) / 2.0
-                        } else {
-                            0.0
-                        }
+                        aligned_offset(line_align, it.width, row_w)
                     };
                     let mut row_offsets: Vec<f32> = Vec::new();
 
@@ -441,6 +533,26 @@ impl LyricsView {
                         }
                         needs_repaint = true;
                     }
+
+                    // Translation / romanization under the line: no karaoke, brighter while
+                    // the line is sung.
+                    for sub in &it.subs {
+                        let sub_font = theme::semibold(&ctx, sub.size);
+                        let lit = if sub.translation { 0.62 } else { 0.72 };
+                        let a = (dim_alpha * 0.9) + (lit * bright_alpha - dim_alpha * 0.9).max(0.0) * h_anim;
+                        let col = Color32::from_white_alpha(alpha_u8(a));
+                        for tok in &sub.tokens {
+                            let row_w = sub.tokens.iter().filter(|t| t.row == tok.row).map(|t| t.x + t.w).fold(0.0, f32::max);
+                            let galley = painter.layout_no_wrap(tok.text.clone(), sub_font.clone(), Color32::PLACEHOLDER);
+                            let origin = pos2(
+                                item_rect.left() + aligned_offset(line_align, it.width, row_w) + tok.x,
+                                item_rect.top() + sub.y + tok.row as f32 * sub.row_h + (sub.row_h - galley.size().y) / 2.0,
+                            );
+                            let mut s = Shape::galley(origin, galley, col);
+                            s.transform(xf);
+                            painter.add(s);
+                        }
+                    }
                 }
             }
         }
@@ -452,6 +564,7 @@ impl LyricsView {
                 let (x, align) = match self.align {
                     LyricsAlign::Left => (rect.left() + pad, Align2::LEFT_TOP),
                     LyricsAlign::Center => (rect.center().x, Align2::CENTER_TOP),
+                    LyricsAlign::Right => (rect.right() - pad, Align2::RIGHT_TOP),
                 };
                 painter.text(
                     pos2(x, y),
@@ -491,6 +604,23 @@ impl LyricsView {
         }
         (width.round() as i32).hash(&mut h);
         font_size.to_bits().hash(&mut h);
+        let roman = self.extras.romanized.clone();
+        let trans = self.extras.translated.clone();
+        let x = &self.extras.opts;
+        let opts = LayoutOpts {
+            roman: roman.as_deref().map(|v| v.as_slice()),
+            trans: trans.as_deref().map(|v| v.as_slice()),
+            roman_as_main: x.romanize_as_main,
+            sub_scale: x.sub_line_scale.clamp(0.3, 1.0),
+            spacing: self.line_spacing.clamp(0.3, 3.0),
+            weight: x.font_weight,
+        };
+        opts.roman.hash(&mut h);
+        opts.trans.hash(&mut h);
+        opts.roman_as_main.hash(&mut h);
+        opts.sub_scale.to_bits().hash(&mut h);
+        opts.spacing.to_bits().hash(&mut h);
+        (opts.weight as u8).hash(&mut h);
         painter.pixels_per_point().to_bits().hash(&mut h);
         theme::family(painter.ctx(), theme::FONT_BOLD).hash(&mut h);
         let key = h.finish();
@@ -498,7 +628,7 @@ impl LyricsView {
             return;
         }
         let had_layout = self.layout.is_some();
-        self.layout = Some(build_layout(painter, lyrics, width, font_size, key));
+        self.layout = Some(build_layout_with(painter, lyrics, width, font_size, key, &opts));
         if !had_layout {
             self.snap_next = true;
         }
@@ -519,14 +649,19 @@ fn is_group_agent(a: &str) -> bool {
     a == "v1000" || a == "group" || a == "both" || a == "all"
 }
 
+#[cfg(test)]
 fn build_layout(painter: &egui::Painter, lyrics: &Lyrics, width: f32, font_size: f32, key: u64) -> LayoutCache {
+    build_layout_with(painter, lyrics, width, font_size, key, &LayoutOpts::default())
+}
+
+fn build_layout_with(painter: &egui::Painter, lyrics: &Lyrics, width: f32, font_size: f32, key: u64, opts: &LayoutOpts) -> LayoutCache {
     let ctx = painter.ctx().clone();
     let lines = &lyrics.lines;
     let primary_agent = lines.iter().filter(|l| !l.bg).find_map(|l| l.agent.clone());
     let mut items: Vec<Item> = Vec::new();
     let mut line_item = vec![0usize; lines.len()];
     let gap_h = font_size * 1.3;
-    let spacing = font_size * 0.75;
+    let spacing = font_size * 0.75 * opts.spacing;
     let mut y = 0.0f32;
     let mut last_right = false;
 
@@ -540,6 +675,7 @@ fn build_layout(painter: &egui::Painter, lyrics: &Lyrics, width: f32, font_size:
             tokens: Vec::new(),
             row_h: gap_h,
             width,
+            subs: Vec::new(),
         });
         *y += gap_h + spacing;
     };
@@ -581,15 +717,45 @@ fn build_layout(painter: &egui::Painter, lyrics: &Lyrics, width: f32, font_size:
 
         let scale = if line.bg { 0.68 } else { 1.0 };
         let size = font_size * scale;
-        let font = theme::bold(&ctx, size);
+        let font = line_font(&ctx, size, opts.weight);
         // Keep room for the active-line scale-up.
         let max_w = width / 1.05;
-        let tokens = layout_tokens(painter, line, &font, max_w);
+        let roman = sub_at(opts.roman, li);
+        let trans = sub_at(opts.trans, li);
+        // Romanization as the line: the reading is sung line by line (its words have no timing),
+        // the original goes underneath.
+        let (main_line, mut sub_texts): (std::borrow::Cow<LyricLine>, Vec<(&str, bool)>) = match roman {
+            Some(r) if opts.roman_as_main => (
+                std::borrow::Cow::Owned(LyricLine { text: r.to_string(), words: Vec::new(), ..line.clone() }),
+                vec![(line.text.as_str(), false)],
+            ),
+            Some(r) => (std::borrow::Cow::Borrowed(line), vec![(r, false)]),
+            None => (std::borrow::Cow::Borrowed(line), Vec::new()),
+        };
+        if let Some(t) = trans {
+            sub_texts.push((t, true));
+        }
+        let tokens = layout_tokens(painter, &main_line, &font, max_w);
         let row_h = painter.fonts_mut(|f| f.row_height(&font)) * 1.12;
         let rows = tokens.iter().map(|t| t.row + 1).max().unwrap_or(1);
-        let h = rows as f32 * row_h;
+        let mut h = rows as f32 * row_h;
+        let mut subs = Vec::new();
+        for (text, translation) in sub_texts {
+            let sub_size = (size * opts.sub_scale).max(9.0);
+            let sub_font = theme::semibold(&ctx, sub_size);
+            let pseudo = LyricLine { text: text.to_string(), ..Default::default() };
+            let toks = layout_tokens(painter, &pseudo, &sub_font, max_w);
+            if toks.is_empty() {
+                continue;
+            }
+            let srow_h = painter.fonts_mut(|f| f.row_height(&sub_font)) * 1.08;
+            let srows = toks.iter().map(|t| t.row + 1).max().unwrap_or(1);
+            let top = h + sub_size * 0.12;
+            subs.push(Sub { tokens: toks, y: top, row_h: srow_h, size: sub_size, translation });
+            h = top + srows as f32 * srow_h;
+        }
         line_item[li] = items.len();
-        items.push(Item { kind: ItemKind::Line(li), y, h, right, scale, tokens, row_h, width: max_w });
+        items.push(Item { kind: ItemKind::Line(li), y, h, right, scale, tokens, row_h, width: max_w, subs });
         y += h + if line.bg { spacing * 0.5 } else { spacing };
 
         // Interlude after a word-synced line.
@@ -702,27 +868,33 @@ fn layout_tokens(painter: &egui::Painter, line: &LyricLine, font: &FontId, max_w
     out
 }
 
+/// X offset of a row `row_w` wide inside `width` for `align`.
+fn aligned_offset(align: LyricsAlign, width: f32, row_w: f32) -> f32 {
+    match align {
+        LyricsAlign::Left => 0.0,
+        LyricsAlign::Center => (width - row_w) / 2.0,
+        LyricsAlign::Right => width - row_w,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_dots(
     painter: &egui::Painter,
     rect: Rect,
-    it: &Item,
+    align: LyricsAlign,
     progress: f32,
     alpha: f32,
     time: f32,
     font_size: f32,
-    align: LyricsAlign,
     glow: Color32,
 ) {
     let r = (font_size * 0.17).max(3.0);
     let gap = r * 1.2;
     let total_w = 3.0 * r * 2.0 + 2.0 * gap;
-    let left = if it.right {
-        rect.right() - total_w
-    } else if align == LyricsAlign::Center {
-        rect.center().x - total_w / 2.0
-    } else {
-        rect.left()
+    let left = match align {
+        LyricsAlign::Right => rect.right() - total_w,
+        LyricsAlign::Center => rect.center().x - total_w / 2.0,
+        LyricsAlign::Left => rect.left(),
     };
     let cy = rect.center().y;
     // Finale: in the last 12 % all dots swell together as a cue.
@@ -761,7 +933,11 @@ fn centered_message(ui: &mut Ui, text: Option<(&str, &str)>, spinner: bool, acce
 }
 
 /// Unsynced lyrics: static scrollable text.
-fn plain(ui: &mut Ui, lyrics: &Lyrics, font_size: f32) {
+fn plain(ui: &mut Ui, lyrics: &Lyrics, font_size: f32, roman: Option<&[Option<String>]>, trans: Option<&[Option<String>]>) {
+    if (roman.is_some() || trans.is_some()) && !lyrics.lines.is_empty() {
+        plain_with_subs(ui, lyrics, font_size, roman, trans);
+        return;
+    }
     let text: String = match &lyrics.plain {
         Some(p) if !p.trim().is_empty() => p.clone(),
         _ => lyrics.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n"),
@@ -784,6 +960,41 @@ fn plain(ui: &mut Ui, lyrics: &Lyrics, font_size: f32) {
                     } else {
                         ui.label(egui::RichText::new(line).font(font.clone()).color(Color32::from_white_alpha(225)));
                     }
+                }
+                if !lyrics.provider.is_empty() {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new(format!("Lyrics from {}", lyrics.provider)).small().color(theme::TEXT_SECONDARY));
+                }
+                ui.add_space(24.0);
+            });
+        });
+    });
+}
+
+/// Unsynced lyrics with a reading / translation under each line.
+fn plain_with_subs(ui: &mut Ui, lyrics: &Lyrics, font_size: f32, roman: Option<&[Option<String>]>, trans: Option<&[Option<String>]>) {
+    let font = theme::semibold(ui.ctx(), (font_size * 0.75).max(14.0));
+    let sub = theme::semibold(ui.ctx(), (font.size * 0.62).max(10.0));
+    egui::ScrollArea::vertical().id_salt("mochy_plain_lyrics").auto_shrink([false, false]).show(ui, |ui| {
+        ui.add_space(16.0);
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width() - 20.0);
+                ui.spacing_mut().item_spacing.y = font.size * 0.2;
+                for (i, line) in lyrics.lines.iter().enumerate() {
+                    if line.text.trim().is_empty() {
+                        ui.add_space(font.size * 0.6);
+                        continue;
+                    }
+                    ui.label(egui::RichText::new(&line.text).font(font.clone()).color(Color32::from_white_alpha(225)));
+                    if let Some(r) = sub_at(roman, i) {
+                        ui.label(egui::RichText::new(r).font(sub.clone()).color(Color32::from_white_alpha(170)));
+                    }
+                    if let Some(t) = sub_at(trans, i) {
+                        ui.label(egui::RichText::new(t).font(sub.clone()).color(Color32::from_white_alpha(150)));
+                    }
+                    ui.add_space(font.size * 0.3);
                 }
                 if !lyrics.provider.is_empty() {
                     ui.add_space(16.0);
@@ -861,6 +1072,49 @@ mod tests {
             assert!(l.total_h > 0.0);
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn sub_lines_add_height_and_follow_options() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let painter = ui.painter().clone();
+            let lyrics = word_lyrics();
+            let plain = build_layout(&painter, &lyrics, 600.0, 30.0, 0);
+            let roman: Vec<Option<String>> = vec![Some("haro waarudo".into()), None, None, Some("afutaa".into())];
+            let trans: Vec<Option<String>> = vec![Some("Xin chào thế giới".into()), None, Some("giọng hai".into()), None];
+            let opts = LayoutOpts { roman: Some(&roman), trans: Some(&trans), ..LayoutOpts::default() };
+            let with = build_layout_with(&painter, &lyrics, 600.0, 30.0, 0, &opts);
+            let item = |l: &LayoutCache, li: usize| l.items[l.line_item[li]].clone();
+            assert_eq!(item(&with, 0).subs.len(), 2);
+            assert!(!item(&with, 0).subs[0].translation && item(&with, 0).subs[1].translation);
+            assert!(item(&with, 0).h > item(&plain, 0).h);
+            assert!(item(&with, 1).subs.is_empty());
+            assert_eq!(item(&with, 1).h, item(&plain, 1).h);
+            assert!(with.total_h > plain.total_h);
+            // romanization as the line: the reading is the line (untimed), the original below
+            let opts = LayoutOpts { roman: Some(&roman), roman_as_main: true, ..LayoutOpts::default() };
+            let main = build_layout_with(&painter, &lyrics, 600.0, 30.0, 0, &opts);
+            let it = item(&main, 0);
+            assert_eq!(it.tokens.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), vec!["haro", "waarudo"]);
+            assert!(it.tokens.iter().all(|t| t.timing.is_none()));
+            assert_eq!(it.subs.len(), 1);
+            assert_eq!(it.subs[0].tokens.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), vec!["Hello", "world"]);
+            // wider line spacing → taller layout
+            let opts = LayoutOpts { spacing: 2.0, ..LayoutOpts::default() };
+            assert!(build_layout_with(&painter, &lyrics, 600.0, 30.0, 0, &opts).total_h > plain.total_h);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn alignment_helpers() {
+        assert_eq!(effective_align(false, LyricsAlign::Center), LyricsAlign::Center);
+        assert_eq!(effective_align(true, LyricsAlign::Left), LyricsAlign::Right);
+        assert_eq!(effective_align(true, LyricsAlign::Right), LyricsAlign::Left);
+        assert_eq!(aligned_offset(LyricsAlign::Right, 100.0, 30.0), 70.0);
+        assert_eq!(aligned_offset(LyricsAlign::Center, 100.0, 30.0), 35.0);
+        assert_eq!(aligned_offset(LyricsAlign::Left, 100.0, 30.0), 0.0);
     }
 
     #[test]

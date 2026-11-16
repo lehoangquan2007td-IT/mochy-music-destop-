@@ -280,11 +280,90 @@ pub struct LyricsSettings {
     /// Negative delays the lyrics — for output devices whose latency the OS
     /// does not report (Bluetooth, TV, DSP-heavy drivers).
     pub global_offset_ms: i32,
+    /// Translation, romanization and display options (lyrics extras).
+    #[serde(default)]
+    pub extras: LyricsExtras,
 }
 
 impl Default for LyricsSettings {
     fn default() -> Self {
-        Self { show: true, provider_order: Vec::new(), text_size: 1.0, line_spacing: 1.0, global_offset_ms: 0 }
+        Self {
+            show: true,
+            provider_order: Vec::new(),
+            text_size: 1.0,
+            line_spacing: 1.0,
+            global_offset_ms: 0,
+            extras: LyricsExtras::default(),
+        }
+    }
+}
+
+/// Horizontal placement of lyric lines (Android `LyricsPosition`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LyricsTextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+/// Weight of the lyric lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LyricsFontWeight {
+    Regular,
+    Medium,
+    Semibold,
+    #[default]
+    Bold,
+}
+
+/// Lyrics extras: readings, translation and display options (Android `LyricsRomanize*Key`,
+/// `Translate*Key`, `LyricsTextPositionKey`, blur keys…).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LyricsExtras {
+    /// Show a romanized reading under lines in Japanese, Korean, Chinese, Cyrillic, Hindi…
+    pub romanize: bool,
+    /// Languages switched off individually (mochy-lyrics `RomanizeLang::id`, e.g. `"zh"`).
+    pub romanize_disabled: Vec<String>,
+    /// Show the romanization as the line itself, with the original underneath.
+    pub romanize_as_main: bool,
+    /// Translate every song automatically (Android "translate the whole session").
+    pub translate_auto: bool,
+    /// Target language (Google Translate code, e.g. "en", "vi").
+    pub translate_language: String,
+    /// Source language, "auto" to detect.
+    pub translate_source: String,
+    pub align: LyricsTextAlign,
+    pub font_weight: LyricsFontWeight,
+    /// Soft blur on lines far from the active one.
+    pub blur_inactive: bool,
+    /// How much inactive lines are dimmed, 0 (not at all) – 1 (strongly).
+    pub dim_inactive: f32,
+    /// Size of the translation / romanization line relative to the lyric line.
+    pub sub_line_scale: f32,
+    /// Click a line to seek to it.
+    pub click_to_seek: bool,
+}
+
+impl Default for LyricsExtras {
+    fn default() -> Self {
+        Self {
+            romanize: true,
+            romanize_disabled: Vec::new(),
+            romanize_as_main: false,
+            translate_auto: false,
+            translate_language: "en".into(),
+            translate_source: "auto".into(),
+            align: LyricsTextAlign::Left,
+            font_weight: LyricsFontWeight::Bold,
+            blur_inactive: true,
+            dim_inactive: 0.5,
+            sub_line_scale: 0.55,
+            click_to_seek: true,
+        }
     }
 }
 
