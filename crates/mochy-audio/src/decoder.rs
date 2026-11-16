@@ -445,6 +445,11 @@ impl DecodeSession {
         }
     }
 
+    /// Media time of the next decoded frame (approximate).
+    pub(crate) fn position_secs(&self) -> f64 {
+        self.running_secs
+    }
+
     fn packet_secs(&self, ts: u64) -> Option<f64> {
         let tb = self.time_base?;
         let t = tb.calc_time(ts);
@@ -705,6 +710,10 @@ pub(crate) struct TrackShared {
     pub seek_done_gen: AtomicU64,
     pub markers: Mutex<VecDeque<Marker>>,
     pub info: Mutex<Option<SourceInfo>>,
+    /// A preloaded track: the decoder has made it the current one…
+    pub switched: AtomicBool,
+    /// …from this ring index on.
+    pub switch_at: AtomicU64,
 }
 
 pub(crate) enum DecCmd {
@@ -713,6 +722,16 @@ pub(crate) enum DecCmd {
     Surround(bool),
     Rebind { producer: rtrb::Producer<f32>, link: Arc<Link>, pos: f64, generation: u64 },
     Stop,
+    /// Speed/pitch of the preloaded track.
+    NextRate(RateParams),
+    SkipSilence(crate::transition::SkipSilence),
+    /// A preloaded track, opened and ready to run into.
+    Next(Box<crate::mix::NextLane>),
+    ClearNext,
+    /// How to hand over to the preloaded track.
+    Order(crate::mix::MixOrder),
+    /// Plain gapless hand-over again (settings changed).
+    ClearOrder,
 }
 
 pub(crate) struct DecoderStart {
@@ -726,10 +745,8 @@ pub(crate) struct DecoderStart {
     pub shared: Arc<TrackShared>,
     pub cancel: Arc<AtomicBool>,
     pub ctl: Receiver<DecCmd>,
+    pub skip_silence: crate::transition::SkipSilence,
 }
-
-/// How much device-rate audio the decoder keeps queued ahead of the device.
-const TARGET_FILL_SECS: f64 = 0.25;
 
 /// Ask the callback to fade out and drop everything queued, and wait.
 pub(crate) fn flush_ring(link: &Link, cancel: &AtomicBool) {
@@ -743,7 +760,7 @@ pub(crate) fn flush_ring(link: &Link, cancel: &AtomicBool) {
     }
 }
 
-fn push_marker(shared: &TrackShared, m: Marker, clear: bool) {
+pub(crate) fn push_marker(shared: &TrackShared, m: Marker, clear: bool) {
     let mut q = shared.markers.lock().unwrap_or_else(|e| e.into_inner());
     if clear {
         q.clear();
@@ -751,20 +768,34 @@ fn push_marker(shared: &TrackShared, m: Marker, clear: bool) {
     q.push_back(m);
 }
 
-struct Feeder {
-    producer: rtrb::Producer<f32>,
-    link: Arc<Link>,
-    pending: Vec<f32>,
+pub(crate) struct Feeder {
+    pub(crate) producer: rtrb::Producer<f32>,
+    pub(crate) link: Arc<Link>,
+    pub(crate) pending: Vec<f32>,
     pending_off: usize,
 }
 
 impl Feeder {
-    fn pending_frames(&self) -> usize {
+    pub(crate) fn new(producer: rtrb::Producer<f32>, link: Arc<Link>) -> Self {
+        Feeder { producer, link, pending: Vec::new(), pending_off: 0 }
+    }
+
+    /// Ring index the next frame appended to `pending` will get.
+    pub(crate) fn index(&self) -> u64 {
+        self.link.written.load(Ordering::Acquire) + self.pending_frames() as u64
+    }
+
+    pub(crate) fn clear_pending(&mut self) {
+        self.pending.clear();
+        self.pending_off = 0;
+    }
+
+    pub(crate) fn pending_frames(&self) -> usize {
         (self.pending.len() - self.pending_off) / 2
     }
 
     /// Push as much pending audio as fits (whole frames only).
-    fn pump(&mut self) {
+    pub(crate) fn pump(&mut self) {
         if self.pending_off >= self.pending.len() {
             self.pending.clear();
             self.pending_off = 0;
@@ -785,7 +816,7 @@ impl Feeder {
         }
     }
 
-    fn queued_frames(&self) -> u64 {
+    pub(crate) fn queued_frames(&self) -> u64 {
         let w = self.link.written.load(Ordering::Acquire);
         let c = self.link.consumed.load(Ordering::Acquire);
         w.saturating_sub(c)
@@ -793,174 +824,25 @@ impl Feeder {
 }
 
 /// Decode thread body. Returns the ring producer (and its link) so the
-/// engine can reuse it for the next track.
+/// engine can reuse it for the next track. The loop itself lives in
+/// `crate::mix` (lanes: gapless / crossfade / crossmix hand-overs).
 pub(crate) fn run_decoder(s: DecoderStart) -> (rtrb::Producer<f32>, Arc<Link>) {
-    let DecoderStart { source, start_secs, mut rate, surround, producer, link, events, shared, cancel, ctl } = s;
-    let mut ctl = Ctl { rx: ctl, stash: None };
-    let mut feeder = Feeder { producer, link, pending: Vec::new(), pending_off: 0 };
-
-    let mut session = match DecodeSession::open(&source, cancel.clone()) {
-        Ok(s) => s,
-        Err(e) => {
-            if !cancel.load(Ordering::Relaxed) {
-                let _ = events.send(Event::Error(format!("could not open track: {e}")));
-            }
-            shared.failed.store(true, Ordering::Release);
-            return adopt_rebind(feeder, &mut ctl);
-        }
-    };
-    session.set_surround(surround);
-    let info = session.info.clone();
-    let _ = events.send(Event::TrackInfo {
-        codec: info.codec.clone(),
-        sample_rate: info.sample_rate,
-        channels: info.channels,
-        bits_per_sample: info.bits_per_sample,
-    });
-    *shared.info.lock().unwrap_or_else(|e| e.into_inner()) = Some(info.clone());
-
-    let mut out_rate = feeder.link.sample_rate;
-    let mut pipe = RatePipeline::new(info.sample_rate, out_rate, rate);
-    let mut media_start = 0.0;
-    if start_secs > 0.0 {
-        media_start = session.seek(start_secs).unwrap_or(0.0);
-    }
-    flush_ring(&feeder.link, &cancel);
-    push_marker(
-        &shared,
-        Marker { index: feeder.link.written.load(Ordering::Acquire), media: media_start, speed: rate.tempo },
-        true,
-    );
-    shared.opened.store(true, Ordering::Release);
-
-    let mut decoded = Vec::<f32>::new();
-    let mut eof_pending = false;
-    let mut at_eof = false;
-    let mut last_marker = Marker { index: feeder.link.written.load(Ordering::Acquire), media: media_start, speed: rate.tempo };
-
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        // --- commands (coalesce seeks) ---
-        let mut seek: Option<(f64, u64)> = None;
-        let mut stop = false;
-        let mut new_rate = None;
-        let mut rebind = None;
-        while let Some(cmd) = ctl.try_recv() {
-            match cmd {
-                DecCmd::Seek { secs, generation } => seek = Some((secs, generation)),
-                DecCmd::Rate(p) => new_rate = Some(p),
-                DecCmd::Surround(on) => session.set_surround(on),
-                DecCmd::Rebind { producer, link, pos, generation } => rebind = Some((producer, link, pos, generation)),
-                DecCmd::Stop => stop = true,
-            }
-        }
-        if stop {
-            if let Some((p, l, _, _)) = rebind {
-                feeder.producer = p;
-                feeder.link = l;
-            }
-            break;
-        }
-        if let Some(p) = new_rate
-            && p != rate
-        {
-            rate = p;
-            pipe.set_params(p);
-            if rebind.is_none() && seek.is_none() {
-                let idx = feeder.link.written.load(Ordering::Acquire) + feeder.pending_frames() as u64;
-                let media = last_marker.media + (idx.saturating_sub(last_marker.index)) as f64 / out_rate as f64 * last_marker.speed;
-                last_marker = Marker { index: idx, media, speed: p.tempo };
-                push_marker(&shared, last_marker, false);
-            }
-        }
-        if let Some((producer, link, pos, generation)) = rebind {
-            feeder.producer = producer;
-            feeder.link = link;
-            feeder.pending.clear();
-            feeder.pending_off = 0;
-            out_rate = feeder.link.sample_rate;
-            pipe = RatePipeline::new(info.sample_rate, out_rate, rate);
-            let actual = session.seek(pos).unwrap_or(pos);
-            at_eof = false;
-            eof_pending = false;
-            shared.eof.store(false, Ordering::Release);
-            last_marker = Marker { index: feeder.link.written.load(Ordering::Acquire), media: actual, speed: rate.tempo };
-            push_marker(&shared, last_marker, true);
-            shared.seek_done_gen.fetch_max(generation, Ordering::AcqRel);
-        }
-        if let Some((secs, generation)) = seek {
-            let actual = match session.seek(secs) {
-                Ok(a) => a,
-                Err(_) => {
-                    // unseekable stream: keep playing where we are
-                    shared.seek_done_gen.fetch_max(generation, Ordering::AcqRel);
-                    continue;
-                }
-            };
-            pipe.reset();
-            feeder.pending.clear();
-            feeder.pending_off = 0;
-            at_eof = false;
-            eof_pending = false;
-            shared.eof.store(false, Ordering::Release);
-            flush_ring(&feeder.link, &cancel);
-            last_marker = Marker { index: feeder.link.written.load(Ordering::Acquire), media: actual, speed: rate.tempo };
-            push_marker(&shared, last_marker, true);
-            shared.seek_done_gen.fetch_max(generation, Ordering::AcqRel);
-        }
-
-        // --- feed ---
-        feeder.pump();
-        if feeder.pending_frames() > 0 {
-            wait_cmd(&mut ctl, &mut feeder, Duration::from_millis(4));
-            continue;
-        }
-        if eof_pending {
-            eof_pending = false;
-            at_eof = true;
-            shared.eof_index.store(feeder.link.written.load(Ordering::Acquire), Ordering::Release);
-            shared.eof.store(true, Ordering::Release);
-        }
-        if at_eof {
-            wait_cmd(&mut ctl, &mut feeder, Duration::from_millis(20));
-            continue;
-        }
-        let target = (out_rate as f64 * TARGET_FILL_SECS) as u64;
-        if feeder.queued_frames() >= target {
-            wait_cmd(&mut ctl, &mut feeder, Duration::from_millis(5));
-            continue;
-        }
-        decoded.clear();
-        match session.decode_next(&mut decoded) {
-            Ok(true) => pipe.process(&decoded, &mut feeder.pending),
-            Ok(false) => {
-                pipe.flush(&mut feeder.pending);
-                eof_pending = true;
-            }
-            Err(e) => {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-                let _ = events.send(Event::Error(format!("playback failed: {e}")));
-                shared.failed.store(true, Ordering::Release);
-                break;
-            }
-        }
-    }
-    adopt_rebind(feeder, &mut ctl)
+    crate::mix::run_lanes(s)
 }
 
 /// Command receiver with a one-slot stash, so waiting can be interrupted by
 /// a command without losing it.
-struct Ctl {
+pub(crate) struct Ctl {
     rx: Receiver<DecCmd>,
     stash: Option<DecCmd>,
 }
 
 impl Ctl {
-    fn try_recv(&mut self) -> Option<DecCmd> {
+    pub(crate) fn new(rx: Receiver<DecCmd>) -> Self {
+        Ctl { rx, stash: None }
+    }
+
+    pub(crate) fn try_recv(&mut self) -> Option<DecCmd> {
         self.stash.take().or_else(|| self.rx.try_recv().ok())
     }
 
@@ -984,7 +866,7 @@ impl Ctl {
 }
 
 /// On exit, a queued `Rebind` still carries the engine's current producer.
-fn adopt_rebind(mut feeder: Feeder, ctl: &mut Ctl) -> (rtrb::Producer<f32>, Arc<Link>) {
+pub(crate) fn adopt_rebind(mut feeder: Feeder, ctl: &mut Ctl) -> (rtrb::Producer<f32>, Arc<Link>) {
     while let Some(cmd) = ctl.try_recv() {
         if let DecCmd::Rebind { producer, link, .. } = cmd {
             feeder.producer = producer;
@@ -996,11 +878,11 @@ fn adopt_rebind(mut feeder: Feeder, ctl: &mut Ctl) -> (rtrb::Producer<f32>, Arc<
 
 /// Wait until a command arrives, the ring wants more audio, or `d` passes;
 /// keeps pushing pending audio meanwhile.
-fn wait_cmd(ctl: &mut Ctl, feeder: &mut Feeder, d: Duration) {
+pub(crate) fn wait_cmd(ctl: &mut Ctl, feeder: &mut Feeder, d: Duration, target_secs: f64) {
     let until = Instant::now() + d;
     loop {
         feeder.pump();
-        let low = feeder.queued_frames() < (feeder.link.sample_rate as f64 * TARGET_FILL_SECS) as u64;
+        let low = feeder.queued_frames() < (feeder.link.sample_rate as f64 * target_secs) as u64;
         if feeder.pending_frames() == 0 && low {
             return;
         }

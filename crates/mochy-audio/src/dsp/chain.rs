@@ -57,6 +57,14 @@ pub(crate) enum ParamMsg {
     Spatial(SpatialParams),
     Loudness(LoudnessParams),
     Gain(f32),
+    /// Transport fade: ramp to `target` over `frames` (smoothstep); `wait`
+    /// holds the ramp until real audio flows. Handled by the callback.
+    Fade { target: f32, frames: u32, wait: bool },
+    /// Transport fade level, at once.
+    FadeSet(f32),
+    /// Switch the final gain once the device has taken ring frame `at`
+    /// (a gapless / crossfaded track change). Cleared by a plain `Gain`.
+    GainAt { at: u64, gain: f32 },
 }
 
 const GAIN_RAMP_SECONDS: f32 = 0.02;
@@ -127,6 +135,7 @@ impl OutputChain {
             ParamMsg::Spatial(p) => self.set_spatial(p),
             ParamMsg::Loudness(p) => self.set_loudness(p),
             ParamMsg::Gain(g) => self.set_gain(g),
+            ParamMsg::Fade { .. } | ParamMsg::FadeSet(_) | ParamMsg::GainAt { .. } => {}
         }
     }
 

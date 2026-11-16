@@ -32,14 +32,21 @@ use thiserror::Error;
 
 mod decoder;
 mod engine;
+mod mix;
 mod output;
 mod spectrum;
 
+pub mod crossmix;
 pub mod dsp;
 pub mod http_source;
+pub mod silence;
+pub mod transition;
 
 pub use decoder::{DecodeSession, RateParams, RatePipeline, ReplayGainTags, SourceInfo};
 pub use spectrum::SpectrumAnalyzer;
+pub use transition::{
+    CrossmixOptions, NextGain, NextTrack, SkipSilence, SongTuning, TransitionConfig, TransitionKind, TransportFade,
+};
 
 /// Where the audio bytes come from.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +107,24 @@ pub enum Command {
     SetOutputDevice { name: Option<String> },
     /// Graceful shutdown of the engine thread.
     Shutdown,
+    // ---- transitions (see `transition.rs`) ----
+    /// Open the track that follows the current one, so the engine can run
+    /// into it gaplessly or through the configured crossfade / crossmix.
+    /// Replaces any earlier preload. `Event::NextStarted` reports the
+    /// switch; without it the current track ends with `Event::Finished`.
+    PreloadNext { next: Box<transition::NextTrack> },
+    /// Forget the preloaded track (the queue changed).
+    ClearNext,
+    /// Gapless / crossfade / crossmix between consecutive tracks.
+    SetTransition { config: transition::TransitionConfig },
+    /// Fades on play / pause / skip (Load while playing) / seek.
+    SetTransportFade { fade: transition::TransportFade },
+    SetSkipSilence { skip: transition::SkipSilence },
+    /// Speed/pitch for the track of the most recent `Load` (`None` = the
+    /// Audio Lab values). Send right after `Load`.
+    SetSongTuning { tuning: Option<transition::SongTuning> },
+    /// Fade out over `secs`, then pause (sleep timer).
+    PauseFade { secs: f32 },
 }
 
 /// Names of available output devices (for the settings picker).
@@ -123,6 +148,9 @@ pub enum Event {
     Progress { pos_secs: f64, duration_secs: Option<f64> },
     /// Emitted once decoding starts: source format details (for the format badge).
     TrackInfo { codec: String, sample_rate: u32, channels: u16, bits_per_sample: Option<u32> },
+    /// The engine moved on to the track preloaded with `token`
+    /// (gapless or crossfaded); the previous track counts as finished.
+    NextStarted { token: u64 },
 }
 
 /// Number of log-spaced bands in [`EngineHandle::spectrum`] (20 Hz – 20 kHz).
@@ -189,3 +217,6 @@ pub fn spawn_engine(events: Sender<Event>) -> Result<EngineHandle, AudioError> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod transition_tests;

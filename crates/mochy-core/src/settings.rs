@@ -322,4 +322,89 @@ pub struct AppSettings {
     pub audio_lab: AudioLab,
     pub lyrics: LyricsSettings,
     pub misc: Misc,
+    /// Transitions, transport fades, skip silence, sleep timer (the mode,
+    /// crossfade length and skip-silence switch stay in `playback`).
+    #[serde(default)]
+    pub transitions: TransitionSettings,
+}
+
+/// `CrossmixLength` (scale 0.6 / 1 / 1.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CrossmixLength {
+    Short,
+    #[default]
+    Medium,
+    Long,
+}
+
+impl CrossmixLength {
+    pub fn scale(self) -> f32 {
+        match self {
+            CrossmixLength::Short => 0.6,
+            CrossmixLength::Medium => 1.0,
+            CrossmixLength::Long => 1.5,
+        }
+    }
+}
+
+/// `CrossmixTempoMatch` (max speed-up 0.6 % / 4 % / 10 %).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CrossmixTempoMatch {
+    Off,
+    Gentle,
+    #[default]
+    Full,
+}
+
+impl CrossmixTempoMatch {
+    pub fn max_speed_up(self) -> f32 {
+        match self {
+            CrossmixTempoMatch::Off => 0.006,
+            CrossmixTempoMatch::Gentle => 0.04,
+            CrossmixTempoMatch::Full => 0.10,
+        }
+    }
+}
+
+/// Transition / fade settings (Android `transportFade*`, `crossfadeGapless`,
+/// `crossmix*`, `skipSilenceInstant`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TransitionSettings {
+    /// Fades on play / pause / skip / seek.
+    pub transport_fade: bool,
+    /// Transport fade length, seconds (0.5–10, default 2).
+    pub transport_fade_secs: f32,
+    /// No crossfade between consecutive songs of one album (gapless instead).
+    pub gapless_albums: bool,
+    pub crossmix_length: CrossmixLength,
+    pub crossmix_tempo_match: CrossmixTempoMatch,
+    /// One style for every mix (`None` = the planner picks); a style id.
+    pub crossmix_style: Option<String>,
+    pub crossmix_stunts: bool,
+    pub crossmix_always_mix: bool,
+    /// Skip silence: jump through long silences with 15 s hops.
+    pub skip_silence_instant: bool,
+    /// Sleep timer fade-out, seconds.
+    pub sleep_fade_secs: f32,
+    /// Last minutes picked in the sleep timer.
+    pub sleep_last_minutes: u32,
+}
+
+impl Default for TransitionSettings {
+    fn default() -> Self {
+        Self {
+            transport_fade: true,
+            transport_fade_secs: 2.0,
+            gapless_albums: true,
+            crossmix_length: CrossmixLength::Medium,
+            crossmix_tempo_match: CrossmixTempoMatch::Full,
+            crossmix_style: None,
+            crossmix_stunts: true,
+            crossmix_always_mix: true,
+            skip_silence_instant: false,
+            sleep_fade_secs: 10.0,
+            sleep_last_minutes: 30,
+        }
+    }
 }

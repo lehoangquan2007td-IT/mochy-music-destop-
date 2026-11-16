@@ -19,6 +19,9 @@ use crate::output::{Link, Output, open_output};
 use crate::spectrum::SpectrumAnalyzer;
 use crate::{Command, Event, TrackInfo, TrackSource};
 
+mod transitions;
+use transitions::{Deferred, NextSlot};
+
 const TICK: Duration = Duration::from_millis(8);
 const PROGRESS_EVERY: Duration = Duration::from_millis(66);
 const SPECTRUM_EVERY: Duration = Duration::from_millis(33);
@@ -69,6 +72,21 @@ struct Engine {
     speed: f32,
     semitones: f32,
     preserve_pitch: bool,
+    // transitions (engine/transitions.rs)
+    transition: crate::transition::TransitionConfig,
+    fade: crate::transition::TransportFade,
+    silence: crate::transition::SkipSilence,
+    /// Per-song speed/pitch of the current track.
+    tuning: Option<crate::transition::SongTuning>,
+    /// Tuning sent for a Load that is still waiting on its fade-out.
+    tuning_pending: Option<Option<crate::transition::SongTuning>>,
+    next: Option<NextSlot>,
+    deferred: Option<(Instant, Deferred)>,
+    analyses: crate::crossmix::worker::Analyses,
+    cur_source: Option<TrackSource>,
+    cur_id: Option<String>,
+    analysis_requested: bool,
+    analysis_cancel: Arc<AtomicBool>,
     // timers
     last_progress: Instant,
     last_spectrum: Instant,
@@ -104,6 +122,18 @@ pub(crate) fn run(rx: Receiver<Command>, events: Sender<Event>, spectrum: Arc<Mu
         speed: 1.0,
         semitones: 0.0,
         preserve_pitch: false,
+        transition: Default::default(),
+        fade: crate::transition::TransportFade { enabled: false, ..Default::default() },
+        silence: Default::default(),
+        tuning: None,
+        tuning_pending: None,
+        next: None,
+        deferred: None,
+        analyses: Default::default(),
+        cur_source: None,
+        cur_id: None,
+        analysis_requested: false,
+        analysis_cancel: Arc::new(AtomicBool::new(false)),
         last_progress: now,
         last_spectrum: now,
         last_device_try: now,
@@ -160,7 +190,15 @@ impl Engine {
     }
 
     fn rate(&self) -> RateParams {
-        RateParams::new(self.speed, self.semitones, self.preserve_pitch)
+        self.rate_for(self.tuning)
+    }
+
+    /// Speed/pitch with a song's own tuning over the Audio Lab values.
+    fn rate_for(&self, tuning: Option<crate::transition::SongTuning>) -> RateParams {
+        match tuning {
+            Some(t) => RateParams::new(t.speed, t.semitones, self.preserve_pitch || t.semitones.abs() > 0.01),
+            None => RateParams::new(self.speed, self.semitones, self.preserve_pitch),
+        }
     }
 
     fn send_param(&mut self, msg: ParamMsg) {
@@ -172,6 +210,8 @@ impl Engine {
     fn send_gain(&mut self) {
         let g = self.output_gain();
         self.send_param(ParamMsg::Gain(g));
+        // a plain gain clears a pending track-change gain: put it back
+        self.resend_gain_at();
     }
 
     fn send_dec(&self, cmd: DecCmd) {
@@ -187,6 +227,7 @@ impl Engine {
     /// (Re)open the preferred device (falling back to the default), keeping
     /// the playback position.
     fn rebuild_output(&mut self) {
+        self.promote_if_switched();
         self.last_device_try = Instant::now();
         let pos = self.position();
         self.out = None;
@@ -284,7 +325,11 @@ impl Engine {
         }
     }
 
-    fn load(&mut self, source: TrackSource, info: TrackInfo, autoplay: bool) {
+    fn load_now(&mut self, source: TrackSource, info: TrackInfo, autoplay: bool) {
+        self.drop_next();
+        self.cur_id = transitions::track_id(&source, &info);
+        self.cur_source = Some(source.clone());
+        self.analysis_requested = false;
         self.stop_decoder();
         self.flush_now();
         self.track = None;
@@ -318,6 +363,7 @@ impl Engine {
             shared: shared.clone(),
             cancel: cancel.clone(),
             ctl: rx,
+            skip_silence: self.silence,
         };
         let join = match std::thread::Builder::new().name("mochy-audio-decode".into()).spawn(move || run_decoder(start)) {
             Ok(j) => j,
@@ -387,17 +433,19 @@ impl Engine {
 
     fn handle(&mut self, cmd: Command) -> bool {
         match cmd {
-            Command::Load { source, info, autoplay } => self.load(source, info, autoplay),
-            Command::Play => self.play(),
-            Command::Pause => self.pause(),
+            Command::Load { source, info, autoplay } => self.cmd_load(source, info, autoplay),
+            Command::Play => self.cmd_play(),
+            Command::Pause => self.cmd_pause(None),
             Command::Toggle => {
-                if self.track.as_ref().is_some_and(|t| t.playing) {
-                    self.pause();
+                if self.intends_playing() {
+                    self.cmd_pause(None);
                 } else {
-                    self.play();
+                    self.cmd_play();
                 }
             }
             Command::Stop => {
+                self.cancel_deferred();
+                self.drop_next();
                 if let Some(t) = &mut self.track {
                     t.last_pos = 0.0;
                 }
@@ -408,19 +456,19 @@ impl Engine {
                 self.clear_spectrum();
                 self.emit(Event::Stopped);
             }
-            Command::SeekTo { secs } => self.seek(secs),
+            Command::SeekTo { secs } => self.cmd_seek(secs),
             Command::SetVolume { linear } => {
                 self.volume = if linear.is_finite() { linear.clamp(0.0, 1.0) } else { 1.0 };
                 self.send_gain();
             }
             Command::SetSpeed { factor } => {
                 self.speed = if factor.is_finite() { factor.clamp(0.1, 8.0) } else { 1.0 };
-                self.send_dec(DecCmd::Rate(self.rate()));
+                self.send_rates();
             }
             Command::SetPitch { semitones, preserve_pitch } => {
                 self.semitones = if semitones.is_finite() { semitones.clamp(-24.0, 24.0) } else { 0.0 };
                 self.preserve_pitch = preserve_pitch;
-                self.send_dec(DecCmd::Rate(self.rate()));
+                self.send_rates();
             }
             Command::SetEq { eq } => {
                 self.eq = eq;
@@ -463,6 +511,21 @@ impl Engine {
                 self.rebuild_output();
             }
             Command::Shutdown => return false,
+            Command::PreloadNext { next } => self.preload_next(*next),
+            Command::ClearNext => self.drop_next(),
+            Command::SetTransition { config } => self.set_transition(config),
+            Command::SetTransportFade { fade } => {
+                self.fade = fade;
+                if !fade.active() && !matches!(self.deferred, Some((_, Deferred::PauseFade))) {
+                    self.finish_deferred_now();
+                }
+            }
+            Command::SetSkipSilence { skip } => {
+                self.silence = skip;
+                self.send_dec(DecCmd::SkipSilence(skip));
+            }
+            Command::SetSongTuning { tuning } => self.set_tuning(tuning),
+            Command::PauseFade { secs } => self.cmd_pause(Some(secs)),
         }
         true
     }
@@ -542,6 +605,8 @@ impl Engine {
             self.rebuild_output();
         }
 
+        self.tick_transitions(now);
+
         // decoder state
         let mut failed = false;
         let mut file_rg = false;
@@ -596,6 +661,7 @@ impl Engine {
             }
         }
         if finished {
+            self.drop_next();
             let dur = self.duration();
             let pos = dur.unwrap_or_else(|| self.position());
             if let Some(t) = &mut self.track {

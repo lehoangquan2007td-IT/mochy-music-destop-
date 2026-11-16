@@ -6,13 +6,13 @@
 //! channel layout and sample format.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
 use crate::dsp::chain::ParamMsg;
-use crate::dsp::{ChainParams, OutputChain};
+use crate::dsp::{ChainParams, Fader, OutputChain};
 
 /// Shared state between the decode thread, engine thread and callback for
 /// one open output stream. Frame counters are in "ring frames".
@@ -33,6 +33,8 @@ pub(crate) struct Link {
     pub callbacks: AtomicU64,
     /// 0 = fine, 1 = stream must be rebuilt.
     pub error: AtomicU8,
+    /// Transport fader level (f32 bits), published by the callback.
+    pub fade_level: AtomicU32,
 }
 
 impl Link {
@@ -47,6 +49,7 @@ impl Link {
             latency_frames: AtomicU64::new(0),
             callbacks: AtomicU64::new(0),
             error: AtomicU8::new(0),
+            fade_level: AtomicU32::new(1f32.to_bits()),
         }
     }
 }
@@ -123,6 +126,8 @@ pub(crate) fn open_output(
         declick: 0.0,
         declick_step: 1.0 / (sample_rate as f32 * DECLICK_SECONDS).max(1.0),
         out_channels: channels as usize,
+        fader: Fader::default(),
+        gain_at: None,
     };
     let stream = match supported.sample_format() {
         SampleFormat::F32 => build::<f32>(&device, &config, state, link.clone()),
@@ -174,6 +179,10 @@ struct CallbackState {
     declick: f32,
     declick_step: f32,
     out_channels: usize,
+    /// Transport fades (pause / play / skip / seek, sleep timer).
+    fader: Fader,
+    /// Pending gain switch at a ring frame (track change inside the ring).
+    gain_at: Option<(u64, f32)>,
 }
 
 impl CallbackState {
@@ -184,7 +193,16 @@ impl CallbackState {
         let latency = ts.playback.duration_since(ts.callback);
         link.latency_frames.store((latency.as_secs_f64() * link.sample_rate as f64) as u64, Ordering::Relaxed);
         while let Ok(msg) = self.params.pop() {
-            self.chain.apply(msg);
+            match msg {
+                ParamMsg::Fade { target, frames, wait } => self.fader.ramp_to(target, frames, wait),
+                ParamMsg::FadeSet(level) => self.fader.set(level),
+                ParamMsg::GainAt { at, gain } => self.gain_at = Some((at, gain)),
+                ParamMsg::Gain(g) => {
+                    self.gain_at = None;
+                    self.chain.apply(ParamMsg::Gain(g));
+                }
+                other => self.chain.apply(other),
+            }
         }
 
         let dc = self.out_channels.max(1);
@@ -195,6 +213,12 @@ impl CallbackState {
             let out = &mut data[done * dc..(done + n) * dc];
             done += n;
 
+            if let Some((at, gain)) = self.gain_at
+                && link.consumed.load(Ordering::Relaxed) >= at
+            {
+                self.gain_at = None;
+                self.chain.set_gain(gain);
+            }
             let flush_epoch = link.flush_epoch.load(Ordering::Acquire);
             let flushing = flush_epoch != link.ack_epoch.load(Ordering::Relaxed);
             let playing = link.playing.load(Ordering::Relaxed);
@@ -233,6 +257,7 @@ impl CallbackState {
             link.consumed.fetch_add(take as u64, Ordering::AcqRel);
 
             self.chain.process(buf);
+            self.fader.process(buf, take);
 
             for (i, frame) in buf.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                 if self.declick != target {
@@ -250,6 +275,7 @@ impl CallbackState {
                 self.mono[i] = (frame[0] + frame[1]) * 0.5;
             }
             let _ = self.tap.push_partial_slice(&self.mono[..n]);
+            link.fade_level.store(self.fader.level().to_bits(), Ordering::Relaxed);
 
             if dc == 1 {
                 for (o, m) in out.iter_mut().zip(&self.mono[..n]) {
