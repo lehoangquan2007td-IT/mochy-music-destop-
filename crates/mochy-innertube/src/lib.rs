@@ -27,6 +27,7 @@ use mochy_core::settings::AudioQuality;
 use serde_json::{Value, json};
 use thiserror::Error;
 
+pub mod explore;
 pub mod parse;
 mod stream;
 
