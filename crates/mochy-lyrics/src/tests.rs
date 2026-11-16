@@ -411,25 +411,25 @@ fn active_line_edges() {
     assert_eq!(active_line_index(&[], 5.0, 0), None);
     assert_eq!(active_line_index(&lines, 0.0, 0), None, "before first line");
     assert_eq!(
-        active_line_index(&lines, 9.6, 0),
+        active_line_index(&lines, 9.99, 0),
         None,
-        "just before the lead-in"
+        "before timestamp is not yet active"
     );
     assert_eq!(
-        active_line_index(&lines, 9.7, 0),
-        None,
-        "exactly 300 ms early is not yet active"
-    );
-    assert_eq!(
-        active_line_index(&lines, 9.701, 0),
+        active_line_index(&lines, 10.0, 0),
         Some(0),
-        "lead-in: lit 300 ms early"
+        "activates exactly at its timestamp (no early lead-in)"
     );
     assert_eq!(active_line_index(&lines, 15.0, 0), Some(0));
     assert_eq!(
-        active_line_index(&lines, 19.8, 0),
+        active_line_index(&lines, 19.99, 0),
+        Some(0),
+        "before next line"
+    );
+    assert_eq!(
+        active_line_index(&lines, 20.0, 0),
         Some(1),
-        "next line lights inside its lead-in"
+        "next line activates at its timestamp"
     );
     assert_eq!(active_line_index(&lines, 25.0, 0), Some(1));
     assert_eq!(
@@ -451,7 +451,7 @@ fn active_line_offset() {
     assert_eq!(
         active_line_index(&lines, 21.0, -1000),
         Some(1),
-        "20.0 s + 300 ms lead-in"
+        "21.0 s - 1000 ms = 20.0 s"
     );
 }
 

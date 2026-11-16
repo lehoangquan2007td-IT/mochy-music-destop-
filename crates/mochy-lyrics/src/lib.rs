@@ -44,8 +44,9 @@ pub use select::{Candidate, pick_best};
 /// Sentinel stored in the `lyrics` table when no provider had lyrics (spec §3.5).
 pub const LYRICS_NOT_FOUND: &str = "LYRICS_NOT_FOUND";
 
-/// How early a line lights up before its own timestamp (Android `LineLeadInMs`).
-pub const LINE_LEAD_IN_MS: i64 = 300;
+/// How early a line lights up before its own timestamp.
+/// Set to 0 ms so lyrics do not run ahead of the music (spec §3.4 note).
+pub const LINE_LEAD_IN_MS: i64 = 0;
 
 /// Fallback duration of an untimed last line (Android `UntimedLineDurationMs`).
 pub const UNTIMED_LINE_DURATION_MS: i64 = 5_000;
@@ -382,7 +383,7 @@ pub fn parse_ttml(xml: &str) -> LyricsResult<Vec<LyricLine>> {
     ttml::parse_ttml_impl(xml)
 }
 
-fn ms(secs: f64) -> i64 {
+fn _ms(secs: f64) -> i64 {
     (secs * 1000.0).round() as i64
 }
 
@@ -394,16 +395,8 @@ fn ms(secs: f64) -> i64 {
 /// the last index; use [`lyrics_end_secs`] to dim it during the outro (Android returns
 /// `lines.size` there).
 pub fn active_line_index(lines: &[LyricLine], t_secs: f64, offset_ms: i32) -> Option<usize> {
-    let last = lines.len().checked_sub(1)?;
-    let position = ms(t_secs) + offset_ms as i64;
-    match lines
-        .iter()
-        .position(|l| ms(l.time) >= position + LINE_LEAD_IN_MS)
-    {
-        Some(0) => None,
-        Some(i) => Some(i - 1),
-        None => Some(last),
-    }
+    let q = t_secs + offset_ms as f64 / 1000.0 + LINE_LEAD_IN_MS as f64 / 1000.0;
+    lines.partition_point(|l| l.time <= q).checked_sub(1)
 }
 
 /// When line `index` stops being sung (seconds): its last word's end when word-synced,
