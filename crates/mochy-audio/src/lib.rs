@@ -34,6 +34,7 @@ mod decoder;
 mod engine;
 mod mix;
 mod output;
+mod priority;
 mod spectrum;
 
 pub mod crossmix;

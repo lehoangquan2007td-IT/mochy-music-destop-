@@ -2,7 +2,9 @@
 //! chips, local shelves (Quick picks = most played of the last 30 days,
 //! Recently played, Forgotten favorites, Most played) with "see all", then
 //! the YTM feed (cards / 4-row song grids, "see all" endpoints) with
-//! continuation loading when scrolled to the bottom.
+//! continuation loading when scrolled to the bottom. Signed in to YouTube,
+//! the youtube.com mixes / music videos and the YouTube history are added
+//! (`crate::account::home_extras`).
 
 use egui::{RichText, Ui};
 
@@ -34,9 +36,36 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, data: &Data, st: &BrowseState) -> bool {
         ui.add_space(10.0);
     }
 
+    // Signed-in YouTube account: mixes / music videos from youtube.com, YouTube history.
+    let extras = crate::account::home_extras();
+    // Signed in, YouTube Music's own "Quick picks" (the first song-row shelf of
+    // the feed) is personal: show it on top instead of the local one.
+    let yt_quick = (extras.is_some() && st.home.selected.is_none() && matches!(st.home.status, Some(Slot::Ready(()))))
+        .then(|| {
+            st.home.sections.iter().take(3).position(|s| {
+                s.rows && !s.items.is_empty() && s.items.iter().all(|i| matches!(i, mochy_core::models::ShelfItem::Song(_)))
+            })
+        })
+        .flatten();
+    if let Some(i) = yt_quick {
+        let sec = &st.home.sections[i];
+        let see_all = see_all_action(sec).or_else(|| Some(Action::Navigate(Route::HomeSection(format!("yt:{i}")))));
+        shelves::yt_section(ui, cx, sec, ("home", i), see_all);
+    }
+    if st.home.selected.is_none()
+        && let Some(x) = &extras
+    {
+        if x.flags.home_mixes && !x.mixes.items.is_empty() {
+            shelves::yt_section(ui, cx, &x.mixes, ("home_ytmix", 0usize), None);
+        }
+        if x.flags.home_music_videos && !x.videos.items.is_empty() {
+            shelves::yt_section(ui, cx, &x.videos, ("home_ytvid", 0usize), None);
+        }
+    }
+
     if st.home.selected.is_none() {
         let lib = &st.lib;
-        if !lib.quick_picks.is_empty() {
+        if !lib.quick_picks.is_empty() && yt_quick.is_none() {
             if shelves::section_header(ui, cx, tr("Quick picks"), None, None, true) {
                 cx.act(Action::Navigate(Route::HomeSection("quick_picks".into())));
             }
@@ -49,6 +78,13 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, data: &Data, st: &BrowseState) -> bool {
                 cx.act(Action::Navigate(Route::HomeSection("recent".into())));
             }
             card_row(ui, cx, recent, "recent");
+        }
+        if let Some(x) = &extras
+            && x.flags.home_history
+            && !x.history.is_empty()
+        {
+            shelves::section_header(ui, cx, tr("Recently on YouTube"), None, None, false);
+            card_row(ui, cx, &x.history, "yt_history");
         }
         if !lib.forgotten.is_empty() {
             if shelves::section_header(ui, cx, tr("Forgotten favorites"), None, None, true) {
@@ -80,6 +116,9 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, data: &Data, st: &BrowseState) -> bool {
                 retry = ui.button(tr("Reload")).clicked();
             }
             for (i, sec) in st.home.sections.iter().enumerate() {
+                if Some(i) == yt_quick {
+                    continue;
+                }
                 let see_all = see_all_action(sec).or_else(|| Some(Action::Navigate(Route::HomeSection(format!("yt:{i}")))));
                 shelves::yt_section(ui, cx, sec, ("home", i), see_all);
             }

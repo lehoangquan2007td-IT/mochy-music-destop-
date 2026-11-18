@@ -420,6 +420,32 @@ pub struct AppSettings {
     /// crossfade length and skip-silence switch stay in `playback`).
     #[serde(default)]
     pub transitions: TransitionSettings,
+    /// Signed-in YouTube account: sync and home feed options (the session
+    /// itself is stored encrypted outside the settings file).
+    #[serde(default)]
+    pub youtube_account: YoutubeAccountSettings,
+}
+
+/// Settings → YouTube account.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct YoutubeAccountSettings {
+    /// Pull liked songs, playlists, albums and artists when the app starts
+    /// (at most every few hours).
+    pub sync_on_start: bool,
+    /// Show the mixes from the youtube.com home page on Home.
+    pub home_mixes: bool,
+    /// Also show music videos from the youtube.com home page (guessed from
+    /// the channel: official artist, Topic, VEVO).
+    pub home_music_videos: bool,
+    /// Show the account's YouTube Music history on Home.
+    pub home_history: bool,
+}
+
+impl Default for YoutubeAccountSettings {
+    fn default() -> Self {
+        Self { sync_on_start: true, home_mixes: true, home_music_videos: false, home_history: true }
+    }
 }
 
 /// `CrossmixLength` (scale 0.6 / 1 / 1.5).

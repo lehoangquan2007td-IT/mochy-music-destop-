@@ -189,6 +189,14 @@ pub fn playlist_menu(ui: &mut Ui, cx: &mut Ctx, p: &Playlist) {
         if button(ui, tr("Rename…")) {
             cx.act(Action::RenamePlaylist(p.id.clone()));
         }
+        if crate::playlist_cover::can_edit(p) {
+            if button(ui, tr("Change cover…")) {
+                cx.act(Action::ChangePlaylistCover(p.id.clone()));
+            }
+            if crate::playlist_cover::has_custom(p) && button(ui, tr("Remove custom cover")) {
+                cx.act(Action::RemovePlaylistCover(p.id.clone()));
+            }
+        }
         if button(ui, tr("Delete…")) {
             cx.act(Action::DeletePlaylist(p.id.clone()));
         }

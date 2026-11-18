@@ -304,6 +304,8 @@ pub fn expanded(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, tab: &mu
         if icons::icon_button(ui, Icon::Collapse, 36.0, false, cx.accent).on_hover_text(tr("Close (Esc)")).clicked() {
             cx.act(Action::SetNowPlaying(false));
         }
+        let (sw, _) = ui.allocate_exact_size(vec2(36.0, 36.0), Sense::hover());
+        crate::pages::player_styles::style_switcher(ui, cx, sw.min, Color32::from_gray(200));
         ui.label(RichText::new(tr("Now playing")).size(14.0).color(TEXT_DIM));
         if let Some(f) = &crate::pages::player_styles::badge(now) {
             ui.add_space(8.0);

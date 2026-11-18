@@ -42,7 +42,7 @@ pub fn transport(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, scale: f32) {
             })
             .collect();
         ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(2.0, accent)));
-        ui.ctx().request_repaint();
+        crate::ui::pace::animate(ui.ctx());
     }
     if r.on_hover_text(tr("Play / pause (Space)")).clicked() {
         cx.act(Action::Toggle);

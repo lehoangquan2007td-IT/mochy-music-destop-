@@ -386,6 +386,32 @@ fn playlists_crud_ordering_remove() {
     assert!(db.playlist_by_id(LIKED_PLAYLIST_ID).unwrap().is_some());
 }
 
+#[test]
+fn playlist_cover_set_clear_and_kept_by_upsert() {
+    let dir = TempDir::new("playlist-cover");
+    let db = dir.db();
+    let id = db.create_playlist("Mine").unwrap();
+    let cover = |db: &Db| db.playlist_by_id(&id).unwrap().unwrap().thumbnail_url;
+    assert_eq!(cover(&db), None);
+
+    db.set_playlist_cover(&id, Some("file:///C:/data/covers/playlist-a.jpg")).unwrap();
+    assert_eq!(cover(&db).as_deref(), Some("file:///C:/data/covers/playlist-a.jpg"));
+    assert_eq!(db.playlists().unwrap()[0].thumbnail_url.as_deref(), Some("file:///C:/data/covers/playlist-a.jpg"));
+
+    // A sync upsert carrying a remote thumbnail keeps the user's picture.
+    let row = db.playlist_by_id(&id).unwrap().unwrap();
+    db.upsert_playlist(&Playlist { thumbnail_url: Some("https://img/remote".into()), ..row }).unwrap();
+    assert_eq!(cover(&db).as_deref(), Some("file:///C:/data/covers/playlist-a.jpg"));
+
+    db.set_playlist_cover(&id, None).unwrap();
+    assert_eq!(cover(&db), None);
+
+    // Without a custom picture the remote thumbnail still updates.
+    let row = db.playlist_by_id(&id).unwrap().unwrap();
+    db.upsert_playlist(&Playlist { thumbnail_url: Some("https://img/remote".into()), ..row }).unwrap();
+    assert_eq!(cover(&db).as_deref(), Some("https://img/remote"));
+}
+
 // --- albums / artists ---------------------------------------------------------------
 
 #[test]

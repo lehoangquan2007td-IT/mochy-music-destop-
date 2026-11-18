@@ -582,7 +582,7 @@ fn recap(ui: &mut Ui, cx: &mut Ctx, st: &mut BrowseState, d: &StatsData) {
     if elapsed >= RECAP_PAGE_SECS && r.page + 1 < pages.len() {
         step = 1;
     }
-    ctx.request_repaint_after(Duration::from_millis(50));
+    crate::ui::pace::animate_after(&ctx, Duration::from_millis(50));
     egui::Area::new(Id::unique("mochy_recap"))
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)

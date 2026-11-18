@@ -76,6 +76,7 @@ impl Analyses {
         }
         let inner = self.inner.clone();
         let spawned = std::thread::Builder::new().name("mochy-crossmix-analysis".into()).spawn(move || {
+            crate::priority::lower_current_thread();
             let started = Instant::now();
             let result = analyze_source(&source, span, duration_secs, &cancel);
             let Ok(mut g) = inner.lock() else { return };

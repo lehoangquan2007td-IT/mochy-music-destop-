@@ -17,7 +17,9 @@ pub const THUMB_PX: u32 = 288;
 /// Edge length of now-playing artwork.
 pub const LARGE_PX: u32 = 800;
 
-const MAX_TEXTURE_BYTES: usize = 160 * 1024 * 1024;
+/// Artwork kept on the GPU (the driver also keeps a copy in RAM); textures
+/// not drawn lately are dropped past this and reload from the disk cache.
+const MAX_TEXTURE_BYTES: usize = 64 * 1024 * 1024;
 const RETRY_FAILED_AFTER: Duration = Duration::from_secs(45);
 
 /// Texture options with mipmaps: thumbnails shrink smoothly at any size
@@ -68,6 +70,18 @@ pub enum ImageSrc {
 impl ImageSrc {
     pub fn key(&self, px: u32) -> String {
         fetch_plan(self, px).0
+    }
+
+    /// A `file://` link (a picture the user picked, e.g. a playlist cover)
+    /// is read from disk like [`ImageSrc::Local`].
+    fn resolved(&self) -> std::borrow::Cow<'_, ImageSrc> {
+        match self {
+            ImageSrc::Url(u) if u.starts_with("file://") => match crate::songedit::file_url_path(u) {
+                Some(p) => std::borrow::Cow::Owned(ImageSrc::Local(p)),
+                None => std::borrow::Cow::Borrowed(self),
+            },
+            _ => std::borrow::Cow::Borrowed(self),
+        }
     }
 }
 
@@ -146,7 +160,8 @@ impl ImageCache {
     pub fn on_msg(&mut self, ctx: &egui::Context, msg: ImageMsg) {
         match msg {
             ImageMsg::Loaded { key, image, small } => {
-                let bytes = image.width() * image.height() * 4;
+                // RGBA plus a third more for the mipmap chain.
+                let bytes = image.width() * image.height() * 4 * 4 / 3;
                 let tex = ctx.load_texture(key.clone(), image, TEX_OPTS);
                 let last_used = self.map.get(&key).map(|e| e.last_used).unwrap_or(self.frame);
                 if let Some(Entry { state: State::Ready { bytes: old, .. }, .. }) =
@@ -177,6 +192,7 @@ impl ImageCache {
         self.svc.spawn(async move {
             let _permit = sem.acquire_owned().await.ok();
             let (key, urls, bars) = fetch_plan(&src, px);
+            let src = src.resolved().into_owned();
             let bytes: Result<Vec<u8>, String> = match &src {
                 ImageSrc::Url(_) => fetch_candidates(&svc.http, &urls).await,
                 ImageSrc::Local(p) => {
@@ -364,6 +380,7 @@ pub fn upgrade_thumbnail(url: &str, px: u32) -> String {
 /// urls (`?sqp=…`) are re-requested clean, which also upgrades a 400×225
 /// search-result thumb to full resolution for the large art box.
 pub fn fetch_plan(src: &ImageSrc, px: u32) -> (String, Vec<String>, bool) {
+    let src = &*src.resolved();
     let ImageSrc::Url(u) = src else {
         let ImageSrc::Local(p) = src else { unreachable!("ImageSrc has two variants") };
         return (format!("local:{px}:{}", p.display()), Vec::new(), false);
@@ -399,6 +416,14 @@ mod tests {
 
     fn plan(url: &str, px: u32) -> (String, Vec<String>, bool) {
         fetch_plan(&ImageSrc::Url(url.to_string()), px)
+    }
+
+    #[test]
+    fn file_url_is_read_from_disk() {
+        let (key, urls, bars) = plan("file:///C:/data/covers/playlist-LPx-1.jpg", 544);
+        assert_eq!(key, fetch_plan(&ImageSrc::Local("C:/data/covers/playlist-LPx-1.jpg".into()), 544).0);
+        assert!(key.starts_with("local:544:"), "{key}");
+        assert!(urls.is_empty() && !bars);
     }
 
     #[test]

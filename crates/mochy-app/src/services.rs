@@ -40,6 +40,8 @@ pub enum AppMsg {
     Toast(String),
     // ---- library/explore/stats ----
     Browse(crate::browse::BrowseMsg),
+    /// Signed-in YouTube account (sign-in, sync, youtube.com home).
+    Account(crate::account::AccountMsg),
     /// Tray icon click / menu pick, or a second launch asking to show the window.
     Tray(crate::tray::TrayCmd),
 }
@@ -98,6 +100,8 @@ pub struct Services {
     pub http: reqwest::Client,
     pub db: DbWorker,
     ytm: Arc<tokio::sync::OnceCell<Arc<YtmClient>>>,
+    /// Session applied to the InnerTube client (also when it is created later).
+    auth: Arc<std::sync::Mutex<(Option<mochy_innertube::YtAuth>, Option<String>)>>,
 }
 
 impl Services {
@@ -109,17 +113,46 @@ impl Services {
             .timeout(std::time::Duration::from_secs(40))
             .build()
             .unwrap_or_default();
-        Self { rt, bus, http, db, ytm: Arc::new(tokio::sync::OnceCell::new()) }
+        Self { rt, bus, http, db, ytm: Arc::new(tokio::sync::OnceCell::new()), auth: Default::default() }
+    }
+
+    /// Sign the InnerTube client in (`Some`) or out (`None`), now and for a
+    /// client created later. `visitor_data` comes from the signed-in page.
+    pub fn set_auth(&self, auth: Option<mochy_innertube::YtAuth>, visitor_data: Option<String>) {
+        if let Ok(mut g) = self.auth.lock() {
+            *g = (auth.clone(), visitor_data.clone());
+        }
+        if let Some(c) = self.ytm.get() {
+            Self::apply_auth(c, auth, visitor_data);
+        }
+    }
+
+    fn apply_auth(c: &YtmClient, auth: Option<mochy_innertube::YtAuth>, visitor_data: Option<String>) {
+        c.set_auth(auth);
+        if let Some(vd) = visitor_data.filter(|v| !v.is_empty()) {
+            c.set_visitor_data(&vd);
+        }
+    }
+
+    /// The InnerTube client if it already exists (no network, no waiting).
+    pub fn ytm_now(&self) -> Option<Arc<YtmClient>> {
+        self.ytm.get().cloned()
     }
 
     /// The InnerTube client, created on first use (retried on later calls if
     /// creation failed, e.g. offline at startup).
     pub async fn ytm(&self) -> Result<Arc<YtmClient>, String> {
         let bus = self.bus.clone();
+        let auth = self.auth.clone();
         self.ytm
             .get_or_try_init(|| async move {
                 match YtmClient::new().await {
                     Ok(c) => {
+                        let (a, vd) = auth.lock().map(|g| g.clone()).unwrap_or_default();
+                        if a.is_some() {
+                            Self::apply_auth(&c, a, vd);
+                            tracing::info!("YouTube account session applied");
+                        }
                         tracing::info!("YouTube Music client ready");
                         bus.send(AppMsg::YtmReady(Ok(())));
                         Ok(Arc::new(c))

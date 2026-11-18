@@ -132,6 +132,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, d: &SideData, tab: &mut Si
     let l = look();
     paint_background(ui, cx, now, rect, grad, mochy_core::player_look::PlayerBackground::DarkGradient, l.glass, true);
     super::close_button(ui, cx, rect.min + vec2(16.0, 12.0), widgets::TEXT);
+    super::style_switcher(ui, cx, rect.min + vec2(56.0, 12.0), widgets::TEXT);
     let side = l.player.show_side_panel && rect.width() > 980.0;
     let device_area = if side {
         Rect::from_min_max(rect.min + vec2(0.0, 56.0), pos2(rect.left() + rect.width() * 0.45, rect.bottom() - 20.0))
@@ -201,7 +202,7 @@ fn device(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, area: Rect, c: Colors) {
     screen_content(ui, cx, now, screen, &c, &st);
     wheel_paint(&p, wheel_c, wheel_r, &c, st.pressed, now.playing);
     if st.mode != Mode::Playing {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        crate::ui::pace::animate_after(ui.ctx(), std::time::Duration::from_millis(100));
     }
     ui.ctx().data_mut(|d| d.insert_temp(id, st));
 }

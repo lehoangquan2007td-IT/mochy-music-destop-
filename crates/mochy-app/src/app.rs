@@ -135,6 +135,8 @@ pub struct MochyApp {
     hidden_to_tray: bool,
     /// Quit was chosen (tray menu): let the close go through.
     quitting: bool,
+    /// Signed-in YouTube account (sign-in window, sync, youtube.com mixes).
+    account: crate::account::YtAccount,
 }
 
 impl MochyApp {
@@ -265,6 +267,8 @@ impl MochyApp {
             started: Instant::now(),
             copy_request: None,
             integrations: crate::integrations::Integrations::new(svc.clone()),
+            // Applies the stored YouTube session before the first Home load below.
+            account: crate::account::YtAccount::new(svc.clone()),
             tray,
             hidden_to_tray: false,
             quitting: false,
@@ -537,6 +541,10 @@ impl MochyApp {
                 self.devices = Some(d);
             }
             AppMsg::Toast(t) => self.toast(t),
+            AppMsg::Account(m) => {
+                let fx = self.account.on_msg(m);
+                self.run_account_effects(fx);
+            }
             AppMsg::Browse(m) => {
                 let effects = self.browse.on_msg(ctx, m, &self.svc);
                 self.run_browse_effects(effects);
@@ -547,6 +555,17 @@ impl MochyApp {
     fn refresh_library_soon(&mut self) {
         // Cheap enough to just do now (one DB round trip).
         self.refresh_library();
+    }
+
+    fn run_account_effects(&mut self, fx: Vec<crate::account::AccountEffect>) {
+        use crate::account::AccountEffect;
+        for e in fx {
+            match e {
+                AccountEffect::ReloadHome => self.load_home(),
+                AccountEffect::RefreshLibrary => self.refresh_library(),
+                AccountEffect::Toast(t) => self.toast(t),
+            }
+        }
     }
 
     fn toast(&mut self, text: impl Into<String>) {
@@ -689,6 +708,8 @@ impl MochyApp {
                 let name = self.data.playlists.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_default();
                 self.dialog = Some(Dialog::ConfirmDelete { id, name });
             }
+            Action::ChangePlaylistCover(id) => crate::playlist_cover::pick(&self.svc, id),
+            Action::RemovePlaylistCover(id) => crate::playlist_cover::remove(&self.svc, id),
             Action::SetNowPlaying(open) => {
                 self.np_open = open;
                 if open {
@@ -843,6 +864,7 @@ impl MochyApp {
                     self.data.playlist_songs.remove(&id);
                     self.svc.db.run(move |db| {
                         crate::db::log_err("delete_playlist", db.delete_playlist(&id));
+                        crate::playlist_cover::delete_files(&id, None);
                         if let Some(v) = crate::db::log_err("playlists", db.playlists()) {
                             bus.send(AppMsg::Library(LibraryMsg::Playlists(v)));
                         }
@@ -1243,7 +1265,7 @@ impl MochyApp {
                             }
                             lab_changed = self.audio_lab_view.show(ui, &mut self.settings.audio_lab, cx.accent);
                             if self.player.is_playing() {
-                                ui.ctx().request_repaint_after(Duration::from_millis(33));
+                                crate::ui::pace::animate_after(ui.ctx(), Duration::from_millis(33));
                             }
                         }
                         Route::Settings => {
@@ -1407,6 +1429,7 @@ impl eframe::App for MochyApp {
         let ctx = ui.ctx().clone();
         // UI language, pushed before drawing so every tr() this frame agrees.
         crate::ui::i18n::set_lang(self.settings.appearance.language);
+        crate::ui::pace::update(&ctx);
         crate::pages::player_styles::begin_frame(&ctx, &mut self.settings, self.player.current(), self.player.volume);
         self.images.begin_frame();
         self.browse.publish_saved(&ctx);
@@ -1427,6 +1450,8 @@ impl eframe::App for MochyApp {
             self.refresh_library();
         }
         self.integrations.ui(&ctx);
+        let account_fx = self.account.frame(&self.settings);
+        self.run_account_effects(account_fx);
         self.draw_toasts(&ctx);
         if let Some(t) = self.copy_request.take() {
             ctx.copy_text(t);
@@ -1529,6 +1554,12 @@ impl MochyApp {
             ("recap", Route::Stats, 3.0),
         ];
         ctx.request_repaint_after(Duration::from_millis(100));
+        // `MOCHY_SHOTS_ONLY=now_playing,settings`: just those shots.
+        if let Ok(only) = std::env::var("MOCHY_SHOTS_ONLY") {
+            while sr.step < steps.len() && !only.split(',').any(|n| n.trim() == steps[sr.step].0) {
+                sr.step += 1;
+            }
+        }
         if sr.step >= steps.len() {
             if sr.started.elapsed().as_secs_f32() > 1.0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);

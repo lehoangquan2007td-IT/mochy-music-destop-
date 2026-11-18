@@ -259,9 +259,9 @@ fn font_definitions() -> FontDefinitions {
 
     let mut fallbacks: Vec<String> = Vec::new();
     for (i, path) in system_fallback_paths().into_iter().enumerate() {
-        if let Ok(bytes) = std::fs::read(&path) {
+        if let Some(data) = map_font(&path) {
             let name = format!("system-fallback-{i}");
-            defs.font_data.insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
+            defs.font_data.insert(name.clone(), Arc::new(data));
             fallbacks.push(name);
         }
     }
@@ -288,6 +288,19 @@ fn font_definitions() -> FontDefinitions {
         mono.extend(fallbacks.iter().cloned());
     }
     defs
+}
+
+/// A system font file, memory-mapped: only the glyphs actually drawn are
+/// paged in (and shared with the OS file cache) instead of ~15 MB per CJK
+/// font sitting in private memory. Falls back to reading the file.
+fn map_font(path: &std::path::Path) -> Option<FontData> {
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: system font files are not modified while mapped (Windows also
+    // refuses to change a mapped file); a torn read would only garble glyphs.
+    if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
+        return Some(FontData::from_blob(Arc::new(map), 0));
+    }
+    std::fs::read(path).ok().map(FontData::from_owned)
 }
 
 /// First existing font per script group (CJK SC, Japanese, Korean, Thai,

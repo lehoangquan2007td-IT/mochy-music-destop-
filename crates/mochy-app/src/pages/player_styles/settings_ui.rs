@@ -33,7 +33,7 @@ pub fn style_name(s: PlayerStyle) -> &'static str {
     })
 }
 
-fn style_desc(s: PlayerStyle) -> &'static str {
+pub(super) fn style_desc(s: PlayerStyle) -> &'static str {
     tr(match s {
         PlayerStyle::Flagship => "Big cover, lyrics and queue beside it",
         PlayerStyle::Turntable => "A record player; its arm is the seek bar",
@@ -42,7 +42,7 @@ fn style_desc(s: PlayerStyle) -> &'static str {
     })
 }
 
-fn background_name(b: PlayerBackground) -> &'static str {
+pub fn background_name(b: PlayerBackground) -> &'static str {
     tr(match b {
         PlayerBackground::CoverGradient => "Cover gradient",
         PlayerBackground::BlurredCover => "Blurred cover",
@@ -52,7 +52,7 @@ fn background_name(b: PlayerBackground) -> &'static str {
     })
 }
 
-fn cover_name(c: CoverShape) -> &'static str {
+pub(super) fn cover_name(c: CoverShape) -> &'static str {
     tr(match c {
         CoverShape::Rounded => "Rounded",
         CoverShape::Square => "Square",
@@ -61,7 +61,7 @@ fn cover_name(c: CoverShape) -> &'static str {
     })
 }
 
-fn face_name(f: BedsideFace) -> &'static str {
+pub(super) fn face_name(f: BedsideFace) -> &'static str {
     tr(match f {
         BedsideFace::Big => "Big",
         BedsideFace::Stacked => "Stacked",
@@ -69,7 +69,7 @@ fn face_name(f: BedsideFace) -> &'static str {
     })
 }
 
-fn wheel_name(w: WheelTheme) -> &'static str {
+pub(super) fn wheel_name(w: WheelTheme) -> &'static str {
     tr(match w {
         WheelTheme::Silver => "Silver",
         WheelTheme::Black => "Black",
@@ -88,38 +88,7 @@ fn style_card(ui: &mut Ui, style: PlayerStyle, selected: bool, accent: Color32) 
         p.rect_stroke(rect, CornerRadius::same(16), Stroke::new(2.0, accent), egui::StrokeKind::Inside);
     }
     let pic = Rect::from_min_size(rect.min + vec2(12.0, 12.0), vec2(rect.width() - 24.0, 86.0));
-    p.rect_filled(pic, CornerRadius::same(10), Color32::from_rgb(0x0E, 0x0E, 0x10));
-    let ink = Color32::from_gray(0x9A);
-    let faint = Color32::from_gray(0x55);
-    match style {
-        PlayerStyle::Flagship => {
-            let art = Rect::from_min_size(pic.min + vec2(10.0, 10.0), vec2(52.0, 52.0));
-            p.rect_filled(art, CornerRadius::same(8), ink);
-            p.rect_filled(Rect::from_min_size(pos2(art.left(), art.bottom() + 6.0), vec2(52.0, 4.0)), CornerRadius::same(2), faint);
-            for k in 0..5 {
-                let w = 56.0 - (k * 9 % 23) as f32;
-                p.rect_filled(Rect::from_min_size(pos2(pic.left() + 76.0, pic.top() + 14.0 + k as f32 * 12.0), vec2(w, 5.0)), CornerRadius::same(2), faint);
-            }
-        }
-        PlayerStyle::Turntable => {
-            let c = pic.center() - vec2(14.0, 0.0);
-            p.circle_filled(c, 34.0, Color32::from_rgb(0x1A, 0x1A, 0x1C));
-            p.circle_stroke(c, 24.0, Stroke::new(1.0, faint));
-            p.circle_filled(c, 12.0, ink);
-            p.line_segment([pos2(pic.right() - 20.0, pic.top() + 12.0), pos2(c.x + 22.0, c.y + 14.0)], Stroke::new(3.0, ink));
-        }
-        PlayerStyle::ClickWheel => {
-            let body = Rect::from_center_size(pic.center(), vec2(40.0, 78.0));
-            p.rect_filled(body, CornerRadius::same(6), Color32::from_gray(0xD9));
-            p.rect_filled(Rect::from_min_size(body.min + vec2(4.0, 5.0), vec2(32.0, 25.0)), CornerRadius::same(2), Color32::WHITE);
-            p.circle_filled(pos2(body.center().x, body.bottom() - 22.0), 14.0, Color32::WHITE);
-            p.circle_filled(pos2(body.center().x, body.bottom() - 22.0), 5.0, Color32::from_gray(0xC8));
-        }
-        PlayerStyle::Bedside => {
-            p.text(pos2(pic.center().x + 20.0, pic.center().y), Align2::CENTER_CENTER, "22:41", FontId::proportional(24.0), ink);
-            p.rect_filled(Rect::from_min_size(pic.min + vec2(10.0, 16.0), vec2(36.0, 36.0)), CornerRadius::same(6), faint);
-        }
-    }
+    paint_style_pic(p, pic, style);
     p.text(pos2(rect.left() + 12.0, pic.bottom() + 10.0), Align2::LEFT_TOP, style_name(style), FontId::proportional(14.0), TEXT);
     let g = widgets::galley_trunc(ui, style_desc(style), FontId::proportional(10.5), TEXT_DIM, rect.width() - 20.0);
     ui.painter().galley(pos2(rect.left() + 12.0, pic.bottom() + 28.0), g, TEXT_DIM);
@@ -127,6 +96,48 @@ fn style_card(ui: &mut Ui, style: PlayerStyle, selected: bool, accent: Color32) 
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp
+}
+
+/// The tiny drawing of a player style inside `pic` (drawn for an 86 px tall
+/// picture, scaled to `pic`'s height; used by Settings and the in-player
+/// switcher).
+pub(super) fn paint_style_pic(p: &egui::Painter, pic: Rect, style: PlayerStyle) {
+    let k = pic.height() / 86.0;
+    let r = |v: f32| CornerRadius::same((v * k).round().clamp(0.0, 255.0) as u8);
+    p.rect_filled(pic, r(10.0), Color32::from_rgb(0x0E, 0x0E, 0x10));
+    let ink = Color32::from_gray(0x9A);
+    let faint = Color32::from_gray(0x55);
+    match style {
+        PlayerStyle::Flagship => {
+            let art = Rect::from_min_size(pic.min + vec2(10.0, 10.0) * k, vec2(52.0, 52.0) * k);
+            p.rect_filled(art, r(8.0), ink);
+            p.rect_filled(Rect::from_min_size(pos2(art.left(), art.bottom() + 6.0 * k), vec2(52.0, 4.0) * k), r(2.0), faint);
+            for i in 0..5 {
+                let w = (56.0 - (i * 9 % 23) as f32) * k;
+                let at = pos2(pic.left() + 76.0 * k, pic.top() + (14.0 + i as f32 * 12.0) * k);
+                p.rect_filled(Rect::from_min_size(at, vec2(w, 5.0 * k)), r(2.0), faint);
+            }
+        }
+        PlayerStyle::Turntable => {
+            let c = pic.center() - vec2(14.0 * k, 0.0);
+            p.circle_filled(c, 34.0 * k, Color32::from_rgb(0x1A, 0x1A, 0x1C));
+            p.circle_stroke(c, 24.0 * k, Stroke::new(1.0, faint));
+            p.circle_filled(c, 12.0 * k, ink);
+            p.line_segment([pos2(pic.right() - 20.0 * k, pic.top() + 12.0 * k), c + vec2(22.0, 14.0) * k], Stroke::new(3.0 * k, ink));
+        }
+        PlayerStyle::ClickWheel => {
+            let body = Rect::from_center_size(pic.center(), vec2(40.0, 78.0) * k);
+            p.rect_filled(body, r(6.0), Color32::from_gray(0xD9));
+            p.rect_filled(Rect::from_min_size(body.min + vec2(4.0, 5.0) * k, vec2(32.0, 25.0) * k), r(2.0), Color32::WHITE);
+            let wheel = pos2(body.center().x, body.bottom() - 22.0 * k);
+            p.circle_filled(wheel, 14.0 * k, Color32::WHITE);
+            p.circle_filled(wheel, 5.0 * k, Color32::from_gray(0xC8));
+        }
+        PlayerStyle::Bedside => {
+            p.text(pos2(pic.center().x + 20.0 * k, pic.center().y), Align2::CENTER_CENTER, "22:41", FontId::proportional(24.0 * k), ink);
+            p.rect_filled(Rect::from_min_size(pic.min + vec2(10.0, 16.0) * k, vec2(36.0, 36.0) * k), r(6.0), faint);
+        }
+    }
 }
 
 fn chip_row<T: Copy + PartialEq>(ui: &mut Ui, label: &str, all: &[T], value: &mut T, name: impl Fn(T) -> &'static str) {

@@ -179,6 +179,7 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
     });
 
     crate::downloads::ui::settings_section(ui, s);
+    crate::account::settings_section(ui, s);
     crate::integrations::settings_section(ui, s);
 
     // ---- Storage ---------------------------------------------------------------

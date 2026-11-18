@@ -46,6 +46,11 @@ static VI: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
         ("Local files", "Tệp cục bộ"),
         ("Rename…", "Đổi tên…"),
         ("Delete…", "Xóa…"),
+        ("Change cover…", "Đổi ảnh bìa…"),
+        ("Remove custom cover", "Bỏ ảnh bìa tự chọn"),
+        ("Playlist cover updated", "Đã đổi ảnh bìa danh sách phát"),
+        ("Couldn't set the cover", "Không thể đặt ảnh bìa"),
+        ("Custom cover removed", "Đã bỏ ảnh bìa tự chọn"),
         // ---- nav tabs / side tabs --------------------------------------------
         ("Playlists", "Danh sách phát"),
         ("History", "Lịch sử"),
@@ -598,6 +603,7 @@ static VI: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
         ("A pocket player — turn the wheel for volume", "Máy nghe nhạc bỏ túi — xoay bánh xe để chỉnh âm lượng"),
         ("A quiet clock for the nightstand", "Đồng hồ yên tĩnh cho đầu giường"),
         ("Player style", "Kiểu trình phát"),
+        ("More in Settings…", "Tùy chỉnh thêm trong Cài đặt…"),
         ("Background", "Nền"),
         ("Cover gradient", "Chuyển màu theo ảnh bìa"),
         ("Blurred cover", "Ảnh bìa làm mờ"),
@@ -987,6 +993,46 @@ static VI: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
         // ---- run in background (tray) ----
         ("Run in background", "Chạy ngầm"),
         ("Closing the window keeps the music playing; Mochy stays in the notification area (tray). Click its icon to reopen, right-click for controls and Quit.", "Đóng cửa sổ thì nhạc vẫn phát; Mochy nằm ở khay hệ thống (notification area). Bấm vào biểu tượng để mở lại, chuột phải để điều khiển hoặc Thoát."),
+        // ---- YouTube account ----------------------------------------------------
+        ("YouTube account", "Tài khoản YouTube"),
+        ("Sign in to get your YouTube Music home, mixes from youtube.com and your liked songs, playlists, albums and artists in Mochy.", "Đăng nhập để có trang chủ YouTube Music của bạn, các Mix từ youtube.com cùng bài hát đã thích, danh sách phát, album và nghệ sĩ ngay trong Mochy."),
+        ("The Google sign-in page is open — finish signing in there.", "Trang đăng nhập Google đang mở — hãy đăng nhập ở đó."),
+        ("Checking the session with YouTube…", "Đang kiểm tra phiên đăng nhập với YouTube…"),
+        ("Signed in", "Đã đăng nhập"),
+        ("The session expired or was signed out on another device. Sign in again to keep syncing.", "Phiên đăng nhập đã hết hạn hoặc bị đăng xuất ở thiết bị khác. Hãy đăng nhập lại để tiếp tục đồng bộ."),
+        ("Syncing…", "Đang đồng bộ…"),
+        ("Sync now", "Đồng bộ ngay"),
+        ("Use another account", "Dùng tài khoản khác"),
+        ("Sign out", "Đăng xuất"),
+        ("Show mixes from the youtube.com home page on Home", "Hiện các Mix từ trang chủ youtube.com ở Trang chủ"),
+        ("Also show music videos from youtube.com (guessed from the channel, may include non-music)", "Hiện cả video nhạc lẻ từ youtube.com (đoán theo kênh, đôi khi lọt video không phải nhạc)"),
+        ("Show my YouTube history on Home", "Hiện lịch sử nghe YouTube ở Trang chủ"),
+        ("Sync the library when Mochy starts (at most every 6 hours)", "Đồng bộ thư viện khi mở Mochy (tối đa 6 giờ một lần)"),
+        ("Read-only: Mochy never changes your YouTube account. Liked songs are added to your likes here; synced playlists, albums and artists are saved to the library and removed again when you remove them on YouTube. The session is encrypted for your Windows user and only sent to YouTube.", "Chỉ đọc: Mochy không bao giờ thay đổi tài khoản YouTube của bạn. Bài hát đã thích được thêm vào mục Đã thích ở đây; danh sách phát, album và nghệ sĩ được lưu vào thư viện và tự gỡ khi bạn gỡ chúng trên YouTube. Phiên đăng nhập được mã hóa theo tài khoản Windows của bạn và chỉ gửi tới YouTube."),
+        ("Sign in again", "Đăng nhập lại"),
+        ("Sign in with Google", "Đăng nhập bằng Google"),
+        ("Signing in inside the app needs Windows — paste the cookie instead.", "Đăng nhập trong app cần Windows — hãy dán cookie thay thế."),
+        ("Syncing your YouTube library…", "Đang đồng bộ thư viện YouTube…"),
+        ("Last synced", "Đồng bộ lần cuối"),
+        ("Not synced yet.", "Chưa đồng bộ lần nào."),
+        ("Advanced: paste a cookie", "Nâng cao: dán cookie"),
+        ("In a browser signed in to music.youtube.com, open the developer tools (F12) → Network, click any request to music.youtube.com and copy the whole \"Cookie\" request header.", "Trong trình duyệt đã đăng nhập music.youtube.com, mở công cụ nhà phát triển (F12) → Network, bấm một request bất kỳ tới music.youtube.com rồi sao chép toàn bộ header \"Cookie\"."),
+        ("Use this cookie", "Dùng cookie này"),
+        ("Sign in to YouTube", "Đăng nhập YouTube"),
+        ("Your password goes to Google only. Mochy keeps the session cookie, encrypted on this PC.", "Mật khẩu chỉ gửi tới Google. Mochy chỉ giữ cookie phiên, được mã hóa trên máy này."),
+        ("The sign-in window could not open:", "Không mở được cửa sổ đăng nhập:"),
+        ("Sign-in window failed — you can paste the cookie instead.", "Cửa sổ đăng nhập bị lỗi — bạn có thể dán cookie thay thế."),
+        ("That cookie has no SAPISID — copy the whole Cookie header from a signed-in music.youtube.com request.", "Cookie này không có SAPISID — hãy sao chép toàn bộ header Cookie từ một request music.youtube.com đã đăng nhập."),
+        ("Signed out of YouTube", "Đã đăng xuất YouTube"),
+        ("YouTube session expired — sign in again in Settings", "Phiên YouTube đã hết hạn — hãy đăng nhập lại trong Cài đặt"),
+        ("Some lists could not be read:", "Không đọc được một số danh sách:"),
+        ("Sync failed:", "Đồng bộ thất bại:"),
+        ("Could not save the session:", "Không lưu được phiên đăng nhập:"),
+        ("Signed in as", "Đã đăng nhập:"),
+        ("YouTube did not accept the session:", "YouTube không chấp nhận phiên đăng nhập:"),
+        ("Mixes from YouTube", "Mix từ YouTube"),
+        ("Music videos from YouTube", "Video nhạc từ YouTube"),
+        ("Recently on YouTube", "Nghe gần đây trên YouTube"),
         ("Show Mochy", "Mở Mochy"),
         ("Quit Mochy", "Thoát Mochy"),
         ("Pause", "Tạm dừng"),
@@ -1049,6 +1095,35 @@ pub fn scan_added(n: usize) -> String {
 /// `Delete "{name}"? This can't be undone.`
 pub fn delete_confirm(name: &str) -> String {
     if vi() { format!("Xóa \"{name}\"? Không thể hoàn tác.") } else { format!("Delete \"{name}\"? This can't be undone.") }
+}
+
+/// Toast after a library sync.
+pub fn yt_sync_summary(liked_new: usize, playlists: usize, albums: usize, artists: usize) -> String {
+    if vi() {
+        format!("Đã đồng bộ YouTube: {liked_new} bài thích mới, {playlists} danh sách phát, {albums} album, {artists} nghệ sĩ")
+    } else {
+        format!("YouTube synced: {liked_new} new liked songs, {playlists} playlists, {albums} albums, {artists} artists")
+    }
+}
+
+/// Counts line under "Last synced".
+pub fn yt_sync_counts(liked: usize, playlists: usize, albums: usize, artists: usize, history: usize) -> String {
+    if vi() {
+        format!("{liked} bài đã thích · {playlists} danh sách phát · {albums} album · {artists} nghệ sĩ · {history} bài trong lịch sử")
+    } else {
+        format!("{liked} liked songs · {playlists} playlists · {albums} albums · {artists} artists · {history} in history")
+    }
+}
+
+/// "just now" / "{n} min ago" / "{n} h ago" / "{n} days ago".
+pub fn ago_label(minutes: u64) -> String {
+    let (n, unit_vi, unit_en) = match minutes {
+        0 => return if vi() { "vừa xong".into() } else { "just now".into() },
+        1..=59 => (minutes, "phút", "min"),
+        60..=1439 => (minutes / 60, "giờ", "h"),
+        _ => (minutes / 1440, "ngày", if minutes / 1440 == 1 { "day" } else { "days" }),
+    };
+    if vi() { format!("{n} {unit_vi} trước") } else { format!("{n} {unit_en} ago") }
 }
 
 #[cfg(test)]

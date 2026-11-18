@@ -247,7 +247,7 @@ impl AudioLabView {
                     accent,
                 };
                 fx::page(ui, lab, &mut self.fx, &f);
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+                crate::ui::pace::animate_after(ui.ctx(), std::time::Duration::from_millis(33));
             }
             LabTab::Headphones => db::page(ui, &mut lab.eq, &mut self.db, accent),
             LabTab::Quality => quality::page(ui, accent),
@@ -357,7 +357,7 @@ impl AudioLabView {
             self.tab = t;
         }
         if moving || (eq_on && punch > 0.01) || glow > 0.01 {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+            crate::ui::pace::animate_after(ui.ctx(), std::time::Duration::from_millis(33));
         }
     }
 
@@ -650,7 +650,7 @@ impl AudioLabView {
             }
         }
         if moving {
-            ui.ctx().request_repaint();
+            crate::ui::pace::animate(ui.ctx());
         }
     }
 
@@ -854,7 +854,7 @@ impl AudioLabView {
             }
         }
         if self.selected.is_some() {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+            crate::ui::pace::animate_after(ui.ctx(), std::time::Duration::from_millis(33));
         }
 
         // Readout of the active node.

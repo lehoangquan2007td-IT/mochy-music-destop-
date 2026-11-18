@@ -202,14 +202,30 @@ pub fn local_playlist(ui: &mut Ui, cx: &mut Ctx, pl: Option<&Playlist>, songs: O
     if !d.is_empty() {
         sub.push_str(&format!(" · {d}"));
     }
-    let src = list.first().and_then(crate::images::song_src);
+    // A cover the user picked (file://) or got from an import, else the first song's art.
+    let src = pl.thumbnail_url.clone().filter(|u| !u.is_empty()).map(ImageSrc::Url).or_else(|| list.first().and_then(crate::images::song_src));
     let id = pl.id.clone();
+    let cover_editable = crate::playlist_cover::can_edit(pl);
+    let custom_cover = crate::playlist_cover::has_custom(pl);
     header(ui, cx, src.as_ref(), false, tr("Your playlist"), &pl.name, &sub, pl.description.as_deref(), Some(list), |ui, cx| {
         if widgets::accent_button(ui, Icon::More, tr("Rename"), cx.accent, false).clicked() {
             cx.act(Action::RenamePlaylist(id.clone()));
         }
         if widgets::accent_button(ui, Icon::Trash, tr("Delete"), cx.accent, false).clicked() {
             cx.act(Action::DeletePlaylist(id.clone()));
+        }
+        if cover_editable {
+            menus::more_button(ui, cx, |ui, cx| {
+                ui.set_min_width(180.0);
+                if ui.button(tr("Change cover…")).clicked() {
+                    ui.close();
+                    cx.act(Action::ChangePlaylistCover(id.clone()));
+                }
+                if custom_cover && ui.button(tr("Remove custom cover")).clicked() {
+                    ui.close();
+                    cx.act(Action::RemovePlaylistCover(id.clone()));
+                }
+            });
         }
     });
     if list.is_empty() {

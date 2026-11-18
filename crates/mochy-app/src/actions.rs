@@ -29,6 +29,10 @@ pub enum Action {
     RemoveFromPlaylist { playlist_id: String, song_id: String },
     RenamePlaylist(String),
     DeletePlaylist(String),
+    /// Pick a picture as a local playlist's cover.
+    ChangePlaylistCover(String),
+    /// Drop a local playlist's picked cover.
+    RemovePlaylistCover(String),
     SetNowPlaying(bool),
     QueuePlay(usize),
     QueueRemove(usize),

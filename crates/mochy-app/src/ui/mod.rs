@@ -5,5 +5,6 @@
 pub mod audio_lab;
 pub mod i18n;
 pub mod lyrics_view;
+pub mod pace;
 pub mod theme;
 pub mod transitions_ui;

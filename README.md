@@ -86,6 +86,14 @@ GPL-3.0) written in **pure Rust** (no Node/Electron): `egui` GUI, `symphonia` +
 - **Integrations**: Discord Rich Presence (your own application id), Last.fm / Libre.fm scrobbling with
   offline queue, playlist importer (Spotify / Apple Music / Deezer / YouTube links, CSV, text lists)
   with Android's TrackMatcher, undo and re-sync.
+- **YouTube account** (Settings → YouTube account): sign in with Google in a small WebView2 window
+  (or paste a cookie). Home becomes your YouTube Music home (Quick picks, Mixed for you…), radio
+  follows your taste, and Home gains **Mixes from YouTube** (the "Mix – …" / "My Mix" playlists of
+  the youtube.com home page), optional music videos from youtube.com and your YouTube history.
+  One-way, read-only library sync: liked songs, playlists, albums and subscribed artists come into
+  the local library (sync-added entries are removed again when they leave the YouTube library;
+  local likes are never removed). Searches stay anonymous. The session is encrypted with Windows
+  DPAPI (`yt_session.bin`).
 - **Desktop**: Now Playing view with artwork-derived gradient & accent, output-device picker,
   OS media keys / Windows SMTC, keyboard shortcuts (Space, Ctrl+←/→, ←/→, Ctrl+↑/↓, Ctrl+F),
   remembers window size. Inter font (Vietnamese OK) + system CJK/Korean/Thai fallbacks.
@@ -100,6 +108,7 @@ GPL-3.0) written in **pure Rust** (no Node/Electron): `egui` GUI, `symphonia` +
 | `mochy-lyrics` | Lyrics providers, LRC/TTML parsing, Android-compatible scoring |
 | `mochy-storage` | SQLite (Room-v43-compatible schema), lenient/atomic settings, cache paths |
 | `mochy-app` | eframe/egui desktop app |
+| `mochy-signin` | Google sign-in window (WebView2 via `wry`), run by `mochy-app` on demand; prints the session to its parent |
 
 ## 🔧 Build & run
 
@@ -110,7 +119,13 @@ cargo build --release -j 4        # -j limits memory use
 ./target/release/mochy-app.exe
 ```
 
-Data lives in `%LOCALAPPDATA%\MochyMusic` (`mochy.db`, `settings.json`, `logs\mochy.log`).
+Data lives in `%LOCALAPPDATA%\MochyMusic` (`mochy.db`, `settings.json`, `logs\mochy.log`;
+YouTube account: `yt_session.bin` (DPAPI-encrypted), `yt_account.json`, `webview-youtube\`).
+
+"Sign in with Google" runs `mochy-signin.exe`, which needs `WebView2Loader.dll` beside it (the
+build copies it into `target\<profile>\`). Ship all three files together:
+`mochy-app.exe`, `mochy-signin.exe`, `WebView2Loader.dll`. Without them the player still works;
+only the sign-in window is unavailable (pasting a cookie still works).
 
 ### Developer tools
 
@@ -118,6 +133,9 @@ Data lives in `%LOCALAPPDATA%\MochyMusic` (`mochy.db`, `settings.json`, `logs\mo
 - `mochy-app --smoke "<query>" --secs N` — headless end-to-end: search → resolve → play → seek → skip.
 - `MOCHY_SHOTS=<dir> [MOCHY_SHOTS_VIDEO=<videoId>] mochy-app` — screenshots of each page, then exit.
 - `cargo run -p mochy-innertube --example ytm_smoke` — live YouTube Music API + stream check.
+- `YT_COOKIE="…" cargo run -p mochy-innertube --example yt_account_smoke` — account info, library,
+  youtube.com mixes (without `YT_COOKIE`: mix playback only).
+- `MOCHY_YT_SIGNIN=1 mochy-app` — open the Google sign-in window at start.
 - `cargo run -p mochy-lyrics --example lyrics -- "<title>" "<artist>" <secs> [provider|all]`.
 - `cargo run -p mochy-audio --example play -- <path-or-url> [secs]`.
 - `cargo run -p mochy-app --example widgets_demo` — Audio Lab / lyrics / theme widgets standalone.
@@ -128,7 +146,9 @@ Data lives in `%LOCALAPPDATA%\MochyMusic` (`mochy.db`, `settings.json`, `logs\mo
   refuses it ("stream cut off" / bot check); playback then fails until it recovers. Auto-skip
   stops after 3 consecutive failures to avoid making it worse. The Android app's extra
   fallbacks (InnerTubeX backend, player-JS signature deciphering) are not ported.
-- Not yet ported: Shazam recognition, YouTube account sign-in/sync, music videos and
+- YouTube account sync is one-way (YouTube → Mochy): likes, playlist edits and listening in Mochy
+  are not sent back to YouTube. Mixes from youtube.com and the personal home need a signed-in account.
+- Not yet ported: Shazam recognition, music videos and
   Spotify Canvas, Android-only features (USB DAC exclusive mode, car/TV/widgets).
 - Crossmix analysis downloads part of the current/next song; switch to Crossfade in
   Settings → Transitions to save data.

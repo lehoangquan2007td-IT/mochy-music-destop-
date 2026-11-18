@@ -580,7 +580,7 @@ impl LyricsView {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64((self.manual_until - now).max(0.0) + 0.01));
         }
         if needs_repaint || pos != self.last_pos {
-            ctx.request_repaint();
+            crate::ui::pace::animate(&ctx);
         }
         self.last_pos = pos;
         clicked_time

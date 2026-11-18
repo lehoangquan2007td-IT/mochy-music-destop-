@@ -27,9 +27,14 @@ use mochy_core::settings::AudioQuality;
 use serde_json::{Value, json};
 use thiserror::Error;
 
+pub mod account;
+pub mod auth;
 pub mod explore;
 pub mod parse;
 mod stream;
+pub mod youtube_home;
+
+pub use auth::YtAuth;
 
 pub use clients::ClientSpec;
 
@@ -104,6 +109,11 @@ pub mod clients {
                 use_web_po_tokens: false,
                 is_embedded: false,
             }
+        }
+
+        /// Web clients that carry the signed-in cookie (Kotlin `loginSupported`).
+        pub fn login_supported(&self) -> bool {
+            matches!(self.name, "WEB_REMIX" | "WEB")
         }
 
         /// Native apps send no Origin/Referer headers.
@@ -429,6 +439,14 @@ struct Inner {
     locale: RwLock<Locale>,
     /// VISIONOS is left alone until then after two bot checks in a row.
     visionos_resting_until: Mutex<Option<Instant>>,
+    /// Signed-in session (cookie + data sync id), web clients only.
+    auth: RwLock<Option<YtAuth>>,
+    /// Bumped whenever a response rotated the session cookie.
+    cookie_rotations: std::sync::atomic::AtomicU64,
+    /// A signed-in request came back as logged out (cookie expired/revoked).
+    session_expired: std::sync::atomic::AtomicBool,
+    /// Seeds of mixes seen on youtube.com (playlist id → watch endpoint).
+    mix_seeds: Mutex<HashMap<String, youtube_home::MixSeed>>,
 }
 
 /// InnerTube client. `Clone` is cheap and shares state (visitor data,
@@ -492,10 +510,16 @@ impl YtmClient {
         if client.client_screen.is_some() {
             c["utcOffsetMinutes"] = json!(0);
         }
+        let mut user = json!({ "lockedSafetyMode": false });
+        if client.login_supported()
+            && let Some(id) = self.auth().and_then(|a| a.data_sync_id)
+        {
+            user["onBehalfOfUser"] = json!(id);
+        }
         json!({
             "client": c,
             "request": { "internalExperimentFlags": [], "useSsl": true },
-            "user": { "lockedSafetyMode": false },
+            "user": user,
         })
     }
 
@@ -509,6 +533,12 @@ impl YtmClient {
         visitor: Option<&str>,
         timeout: Duration,
     ) -> YtmResult<Value> {
+        let mut body = body;
+        let signed_in = client.login_supported() && endpoint_uses_login(endpoint) && self.is_signed_in();
+        if !signed_in && let Some(user) = body["context"]["user"].as_object_mut() {
+            // Acting for a brand account only makes sense with the cookie.
+            user.remove("onBehalfOfUser");
+        }
         let url = format!("{}/youtubei/v1/{}?prettyPrint=false", client.api_origin, endpoint);
         let loc = self.locale();
         let accept_lang = format!("{}-{},{};q=0.9", loc.hl, loc.gl, loc.hl);
@@ -534,9 +564,25 @@ impl YtmClient {
             if let Some(v) = visitor.filter(|v| !v.is_empty()) {
                 req = req.header("X-Goog-Visitor-Id", v);
             }
+            if signed_in && let Some(a) = self.auth() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                req = req.header("Cookie", &a.cookie).header("X-Goog-AuthUser", "0");
+                if let Some(h) = a.authorization(client.api_origin, now) {
+                    req = req.header("Authorization", h);
+                }
+            }
             let transient: String = match req.send().await {
                 Ok(resp) => {
+                    if signed_in {
+                        self.absorb_set_cookies(resp.headers());
+                    }
                     let status = resp.status();
+                    if signed_in && (status.as_u16() == 401 || status.as_u16() == 403) {
+                        self.inner.session_expired.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     if status.as_u16() == 429 {
                         return Err(YtmError::RateLimited);
                     }
@@ -575,6 +621,7 @@ impl YtmClient {
         let resp = self
             .post_api(&clients::WEB_REMIX, endpoint, body, Some(&visitor), Duration::from_secs(20))
             .await?;
+        self.note_logged_out(&resp);
         // Adopt the visitor id YouTube assigns when we had none.
         if visitor.is_empty()
             && let Some(vd) = resp["responseContext"]["visitorData"].as_str()
@@ -612,6 +659,27 @@ impl YtmClient {
         self.remix("next", extra).await
     }
 
+    /// Merge rotated cookies from a signed-in response.
+    fn absorb_set_cookies(&self, headers: &reqwest::header::HeaderMap) {
+        let set: Vec<&str> = headers.get_all(reqwest::header::SET_COOKIE).iter().filter_map(|v| v.to_str().ok()).collect();
+        if set.is_empty() {
+            return;
+        }
+        let mut guard = self.inner.auth.write().expect("auth lock");
+        if let Some(a) = guard.as_mut()
+            && a.merge_set_cookies(set)
+        {
+            self.inner.cookie_rotations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Flag the session as expired when a signed-in response says logged out.
+    fn note_logged_out(&self, resp: &Value) {
+        if self.is_signed_in() && resp["responseContext"]["mainAppWebResponseContext"]["loggedOut"].as_bool() == Some(true) {
+            self.inner.session_expired.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// Web visitor data from `sw.js_data` (strip `)]}'`, `[0][2]`, first
     /// string matching `^Cg[ts]`), else minted via `visitor_id`.
     async fn mint_visitor(&self) -> YtmResult<String> {
@@ -640,6 +708,12 @@ impl YtmClient {
             .map(str::to_string)
             .ok_or_else(|| YtmError::Parse("no visitorData in visitor_id response".into()))
     }
+}
+
+/// Searches stay anonymous even when signed in, so typing in Mochy never
+/// ends up in the account's YouTube search history (the sync is read-only).
+fn endpoint_uses_login(endpoint: &str) -> bool {
+    !matches!(endpoint, "search" | "music/get_search_suggestions")
 }
 
 /// Parse `sw.js_data` → visitor data (Kotlin `YouTube.visitorData`).
@@ -698,6 +772,37 @@ impl YtmClient {
     /// Restore previously persisted web visitor data.
     pub fn set_visitor_data(&self, vd: &str) {
         *self.inner.visitor_data.write().expect("visitor lock") = vd.to_string();
+    }
+
+    /// Sign in (`Some`) or out (`None`). Signed in, every `WEB_REMIX`/`WEB`
+    /// call (home, search, browse, next, library) carries the cookie and a
+    /// `SAPISIDHASH`, so YouTube answers for that account. Streams stay
+    /// anonymous.
+    pub fn set_auth(&self, auth: Option<YtAuth>) {
+        *self.inner.auth.write().expect("auth lock") = auth.filter(|a| !a.cookie.is_empty());
+        self.inner.session_expired.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Current session (with any rotated cookies merged in).
+    pub fn auth(&self) -> Option<YtAuth> {
+        self.inner.auth.read().expect("auth lock").clone()
+    }
+
+    /// Whether a signed-in cookie is set.
+    pub fn is_signed_in(&self) -> bool {
+        self.inner.auth.read().expect("auth lock").as_ref().is_some_and(|a| a.is_signed_in())
+    }
+
+    /// Counter bumped whenever responses rotated the cookie — persist
+    /// [`Self::auth`] again when it changes.
+    pub fn cookie_rotations(&self) -> u64 {
+        self.inner.cookie_rotations.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A signed-in request was answered as logged out (or 401/403): the
+    /// cookie no longer works and the user has to sign in again.
+    pub fn session_expired(&self) -> bool {
+        self.inner.session_expired.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Search across all filters at once (songs/videos/albums/artists/playlists).
@@ -767,6 +872,11 @@ impl YtmClient {
     /// (`PL…`, `RDCLAK…`, `OLAK5…`). Follows continuations up to
     /// [`clients::MAX_GET_QUEUE_SIZE`] tracks.
     pub async fn playlist(&self, browse_id: &str) -> YtmResult<(Playlist, Vec<Song>)> {
+        // Mixes (radio, `RD…`) have no playlist page: play them through `next`.
+        if youtube_home::is_mix_id(browse_id) {
+            let pid = browse_id.strip_prefix("VL").unwrap_or(browse_id);
+            return self.mix_playlist(pid).await;
+        }
         let bid = if browse_id.starts_with("VL") { browse_id.to_string() } else { format!("VL{browse_id}") };
         let json = self.browse(Some(&bid), None, None).await?;
         let (mut playlist, mut songs) = parse::playlist_response(&json);
@@ -946,5 +1056,35 @@ mod unit {
     fn stream_walk_has_no_unusable_clients() {
         assert_eq!(clients::STREAM_WALK[0], clients::VISIONOS);
         assert!(clients::STREAM_WALK.iter().all(|c| !c.login_required && !c.use_web_po_tokens));
+    }
+}
+
+#[cfg(test)]
+mod auth_wiring_tests {
+    use super::*;
+
+    #[test]
+    fn searches_never_carry_the_session() {
+        assert!(!endpoint_uses_login("search"));
+        assert!(!endpoint_uses_login("music/get_search_suggestions"));
+        assert!(endpoint_uses_login("browse"));
+        assert!(endpoint_uses_login("next"));
+        assert!(endpoint_uses_login("account/account_menu"));
+    }
+
+    #[test]
+    fn context_acts_for_the_brand_account_only_when_signed_in() {
+        let c = YtmClient::new_offline().unwrap();
+        let ctx = c.context(&clients::WEB_REMIX, None);
+        assert!(ctx["user"].get("onBehalfOfUser").is_none());
+        c.set_auth(Some(YtAuth::new("SAPISID=x", Some("brand||main".into()))));
+        assert!(c.is_signed_in());
+        assert_eq!(c.context(&clients::WEB_REMIX, None)["user"]["onBehalfOfUser"], "main");
+        assert_eq!(c.context(&clients::WEB, None)["user"]["onBehalfOfUser"], "main");
+        // Stream clients never act for the account.
+        assert!(c.context(&clients::VISIONOS, None)["user"].get("onBehalfOfUser").is_none());
+        c.set_auth(None);
+        assert!(!c.is_signed_in());
+        assert!(c.context(&clients::WEB_REMIX, None)["user"].get("onBehalfOfUser").is_none());
     }
 }

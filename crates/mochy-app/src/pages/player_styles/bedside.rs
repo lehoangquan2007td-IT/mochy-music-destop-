@@ -52,7 +52,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, _grad: (Color32, Color32))
     if (target - rest.sleep).abs() < 0.002 {
         rest.sleep = target;
     } else {
-        ui.ctx().request_repaint();
+        crate::ui::pace::animate(ui.ctx());
     }
     let sleep = rest.sleep;
     ui.ctx().data_mut(|d| d.insert_temp(id, rest));
@@ -83,6 +83,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, now: &NowInfo, _grad: (Color32, Color32))
     clock_face(ui, info, l.bedside_face, &now_t, l.bedside_24h, ink, soft);
     if awake > 0.05 {
         super::close_button(ui, cx, rect.min + vec2(14.0, 10.0), Color32::WHITE.gamma_multiply(awake * 0.9));
+        super::style_switcher(ui, cx, rect.min + vec2(54.0, 10.0), Color32::WHITE.gamma_multiply(awake * 0.9));
     }
 }
 

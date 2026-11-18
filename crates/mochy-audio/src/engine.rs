@@ -365,7 +365,10 @@ impl Engine {
             ctl: rx,
             skip_silence: self.silence,
         };
-        let join = match std::thread::Builder::new().name("mochy-audio-decode".into()).spawn(move || run_decoder(start)) {
+        let join = match std::thread::Builder::new().name("mochy-audio-decode".into()).spawn(move || {
+            crate::priority::raise_current_thread();
+            run_decoder(start)
+        }) {
             Ok(j) => j,
             Err(e) => {
                 self.emit(Event::Error(format!("could not start decoder: {e}")));

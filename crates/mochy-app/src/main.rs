@@ -8,6 +8,7 @@
 //!                                  search QUERY, resolve + play the first
 //!                                  song for N seconds, lyrics; logs events.
 
+mod account;
 mod actions;
 mod app;
 mod browse;
@@ -23,6 +24,7 @@ mod lyrics_extras;
 mod media_keys;
 mod nav;
 mod pages;
+mod playlist_cover;
 mod queue;
 mod services;
 mod smoke;

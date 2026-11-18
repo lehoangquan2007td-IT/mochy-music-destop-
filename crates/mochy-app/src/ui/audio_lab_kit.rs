@@ -296,7 +296,7 @@ impl CardStack {
         if (target - self.shown_front).abs() < 0.002 {
             self.shown_front = target;
         } else {
-            ui.ctx().request_repaint();
+            crate::ui::pace::animate(ui.ctx());
         }
         if !ui.is_rect_visible(rect) {
             return resp;

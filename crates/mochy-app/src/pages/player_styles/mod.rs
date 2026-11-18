@@ -4,16 +4,17 @@
 //!
 //! The flagship view in `now_playing.rs` calls the small hooks here
 //! ([`show_alternate`], [`paint_backdrop`], [`paint_cover`], [`art_side`],
-//! [`badge`], [`stream_info_button`]…); the settings are pushed once per frame by
+//! [`badge`], [`stream_info_button`], [`style_switcher`]…); the settings are pushed once per frame by
 //! [`begin_frame`] (like the UI language), so the views need no new arguments.
 
 pub mod bedside;
 pub mod click_wheel;
 mod clock;
 mod settings_ui;
+mod switcher;
 pub mod turntable;
 
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 use egui::{Color32, CornerRadius, Mesh, Pos2, Rect, Shape, Stroke, TextureHandle, Ui, Vec2, pos2, vec2};
 use mochy_core::models::Song;
@@ -41,11 +42,28 @@ pub struct Look {
 
 static LOOK: RwLock<Option<Look>> = RwLock::new(None);
 
+/// The look edited inside the player ([`style_switcher`]); applied to the
+/// settings by the next [`begin_frame`], so it is saved like any Settings edit.
+static REQUEST: Mutex<Option<PlayerLook>> = Mutex::new(None);
+
+fn request(look: PlayerLook) {
+    if let Ok(mut r) = REQUEST.lock() {
+        *r = Some(look);
+    }
+}
+
+fn take_request() -> Option<PlayerLook> {
+    REQUEST.lock().ok().and_then(|mut r| r.take())
+}
+
 /// egui's own default animation time (s).
 const BASE_ANIMATION_TIME: f32 = 1.0 / 12.0;
 
 /// Push this frame's look and Audio Lab requests (call before drawing).
 pub fn begin_frame(ctx: &egui::Context, s: &mut AppSettings, song: Option<&Song>, volume: f32) {
+    if let Some(p) = take_request() {
+        s.player = p;
+    }
     s.player.sanitize();
     let (norm, quality) = stream_facts::take_requests();
     if let Some(n) = norm {
@@ -190,7 +208,7 @@ pub fn paint_background(ui: &Ui, cx: &mut Ctx, now: &NowInfo, rect: Rect, grad: 
             }
             super::now_playing::gradient(ui, rect, Color32::from_black_alpha(40), Color32::from_black_alpha(60), Color32::from_black_alpha(140), Color32::from_black_alpha(160));
             if animations() {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+                crate::ui::pace::animate_after(ui.ctx(), std::time::Duration::from_millis(50));
             }
         }
     }
@@ -283,7 +301,7 @@ pub fn spin(ui: &Ui, key: &str, running: bool, rad_per_sec: f32) -> f32 {
         *a
     });
     if running {
-        ui.ctx().request_repaint();
+        crate::ui::pace::animate(ui.ctx());
     }
     a
 }
@@ -401,6 +419,52 @@ pub fn close_button(ui: &mut Ui, cx: &mut Ctx, at: Pos2, color: Color32) {
     }
 }
 
+/// Shared "player style" button, right of the close button in every style:
+/// opens the look panel ([`switcher::panel`]: styles and backgrounds as small
+/// pictures plus the current style's options) without a trip to Settings.
+pub fn style_switcher(ui: &mut Ui, cx: &mut Ctx, at: Pos2, color: Color32) {
+    let r = Rect::from_min_size(at, vec2(36.0, 36.0));
+    let resp = ui.interact(r, egui::Id::unique("mochy_style_switcher"), egui::Sense::click()).on_hover_text(tr("Player style"));
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    if resp.hovered() || open {
+        ui.painter().circle_filled(r.center(), 18.0, Color32::from_white_alpha(20));
+    }
+    paint_style_icon(ui.painter(), r.shrink(9.0), color);
+    // Screenshot automation: `MOCHY_SHOTS_NP_PANEL=1` shows the panel open.
+    if !open && std::env::var_os("MOCHY_SHOTS").is_some() && std::env::var_os("MOCHY_SHOTS_NP_PANEL").is_some() {
+        egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&resp));
+    }
+    let picked = egui::Popup::menu(&resp)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(switcher::WIDTH)
+        .show(|ui| {
+            let before = look().player;
+            let mut edited = before.clone();
+            let pick = switcher::panel(ui, &mut edited);
+            if edited != before {
+                request(edited);
+                ui.ctx().request_repaint();
+            }
+            pick
+        });
+    if let Some(switcher::PanelPick::OpenSettings) = picked.and_then(|p| p.inner) {
+        cx.act(Action::Navigate(crate::nav::Route::Settings));
+        cx.act(Action::SetNowPlaying(false));
+    }
+}
+
+/// A small "layouts" glyph: a frame split into a big pane and two small ones.
+fn paint_style_icon(p: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let r = Rect::from_center_size(r.center(), Vec2::splat(s));
+    let st = Stroke::new((s * 0.085).max(1.4), color);
+    p.rect_stroke(r.shrink(s * 0.06), CornerRadius::same((s * 0.16) as u8), st, egui::StrokeKind::Inside);
+    let x = r.left() + s * 0.48;
+    p.line_segment([pos2(x, r.top() + s * 0.1), pos2(x, r.bottom() - s * 0.1)], st);
+    let y = r.center().y;
+    p.line_segment([pos2(x, y), pos2(r.right() - s * 0.1, y)], st);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +483,14 @@ mod tests {
         s.player.animations = false;
         begin_frame(&ctx, &mut s, None, 0.5);
         assert_eq!(ctx.global_style().animation_time, 0.0);
+        // In-player style / background picks land in the settings once.
+        request(PlayerLook { style: PlayerStyle::ClickWheel, background: PlayerBackground::Ambient, ..s.player.clone() });
+        begin_frame(&ctx, &mut s, None, 0.5);
+        assert_eq!(s.player.style, PlayerStyle::ClickWheel);
+        assert_eq!(s.player.background, PlayerBackground::Ambient);
+        assert_eq!(look().player.style, PlayerStyle::ClickWheel);
+        s.player.style = PlayerStyle::Flagship;
+        begin_frame(&ctx, &mut s, None, 0.5);
+        assert_eq!(s.player.style, PlayerStyle::Flagship);
     }
 }

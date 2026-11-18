@@ -1,0 +1,21 @@
+[package]
+name = "mochy-signin"
+description = "Google sign-in window for Mochy's YouTube account (WebView2); prints the session for mochy-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mochy-signin"
+path = "src/main.rs"
+
+[dependencies]
+mochy-innertube = { path = "../mochy-innertube" }
+mochy-storage = { path = "../mochy-storage" }
+mochy-core = { path = "../mochy-core" }
+serde_json = "1.0.154"
+
+[target."cfg(windows)".dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.37.0"
+wry = { version = "0.57", default-features = false }

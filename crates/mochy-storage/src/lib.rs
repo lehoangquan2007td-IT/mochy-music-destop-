@@ -24,6 +24,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::Value;
 use thiserror::Error;
 
+pub mod yt_session;
 mod offline;
 pub use offline::{DownloadRow, EditedArtist, KIND_CACHE, KIND_DOWNLOAD, SongEdit};
 mod song_tuning;
@@ -742,7 +743,8 @@ impl Db {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET name = excluded.name, browseId = COALESCE(excluded.browseId, playlist.browseId),
                 lastUpdateTime = excluded.lastUpdateTime, remoteSongCount = COALESCE(excluded.remoteSongCount, playlist.remoteSongCount),
-                thumbnailUrl = COALESCE(excluded.thumbnailUrl, playlist.thumbnailUrl),
+                thumbnailUrl = CASE WHEN playlist.thumbnailUrl LIKE 'file://%' THEN playlist.thumbnailUrl
+                    ELSE COALESCE(excluded.thumbnailUrl, playlist.thumbnailUrl) END,
                 description = COALESCE(excluded.description, playlist.description)",
             params![
                 p.id,
@@ -779,6 +781,17 @@ impl Db {
         self.conn().execute(
             "UPDATE playlist SET name = ?1, lastUpdateTime = ?2 WHERE id = ?3",
             params![name, epoch_millis(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Set (a link or a `file://` picture the user picked) or clear the
+    /// playlist's cover. A `file://` cover survives later [`Self::upsert_playlist`]
+    /// calls (library sync); importers only fill a missing one.
+    pub fn set_playlist_cover(&self, id: &str, cover: Option<&str>) -> StorageResult<()> {
+        self.conn().execute(
+            "UPDATE playlist SET thumbnailUrl = ?1, lastUpdateTime = ?2 WHERE id = ?3",
+            params![cover, epoch_millis(), id],
         )?;
         Ok(())
     }

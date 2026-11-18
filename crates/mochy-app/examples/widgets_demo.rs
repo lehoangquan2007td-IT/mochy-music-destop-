@@ -21,6 +21,8 @@ mod audio_lab;
 mod ui {
     #[path = "../../src/ui/i18n.rs"]
     pub mod i18n;
+    #[path = "../../src/ui/pace.rs"]
+    pub mod pace;
 }
 
 #[path = "../src/stream_facts.rs"]

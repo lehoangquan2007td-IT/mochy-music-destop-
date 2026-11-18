@@ -259,7 +259,7 @@ impl DbState {
                     });
                 }
             } else {
-                ctx.request_repaint_after(Duration::from_millis(50));
+                crate::ui::pace::animate_after(&ctx, Duration::from_millis(50));
             }
         }
     }
@@ -529,7 +529,7 @@ fn selected_card(ui: &mut Ui, eq: &mut EqSettings, st: &mut DbState, accent: Col
                 cc.tuning = tuning;
             }
             st.tune_at = Some(Instant::now());
-            ui.ctx().request_repaint_after(Duration::from_millis(150));
+            crate::ui::pace::animate_after(ui.ctx(), Duration::from_millis(150));
         }
     });
     if remove {
@@ -590,7 +590,7 @@ fn database(ui: &mut Ui, eq: &mut EqSettings, st: &mut DbState, accent: Color32)
                     p.rect_filled(Rect::from_min_size(pos2(inner.left() + 40.0, y), vec2(w, 11.0)), CornerRadius::same(6), theme::ROW);
                     p.rect_filled(Rect::from_min_size(pos2(inner.left() + 40.0, y + 16.0), vec2(70.0, 8.0)), CornerRadius::same(5), theme::PILL_CHIP);
                 }
-                ctx.request_repaint_after(Duration::from_millis(100));
+                crate::ui::pace::animate_after(&ctx, Duration::from_millis(100));
             }
             IndexState::Failed(e) => {
                 let e = e.clone();
