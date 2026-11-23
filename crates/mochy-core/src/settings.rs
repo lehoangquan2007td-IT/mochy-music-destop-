@@ -424,6 +424,26 @@ pub struct AppSettings {
     /// itself is stored encrypted outside the settings file).
     #[serde(default)]
     pub youtube_account: YoutubeAccountSettings,
+    /// Taste profile ("Gu của bạn"): radio ordering and excluded playlists.
+    #[serde(default)]
+    pub taste: TasteSettings,
+}
+
+/// Taste profile options.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TasteSettings {
+    /// Order radio results by the taste profile (liked artists first,
+    /// songs you keep skipping out).
+    pub rerank_radio: bool,
+    /// Local playlist ids whose songs don't count towards the profile.
+    pub excluded_playlists: Vec<String>,
+}
+
+impl Default for TasteSettings {
+    fn default() -> Self {
+        Self { rerank_radio: true, excluded_playlists: Vec::new() }
+    }
 }
 
 /// Settings → YouTube account.
@@ -526,5 +546,20 @@ impl Default for TransitionSettings {
             sleep_fade_secs: 10.0,
             sleep_last_minutes: 30,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taste_settings_default_for_old_files() {
+        let s: AppSettings = serde_json::from_str(r#"{"misc": {"persistent_queue": false}}"#).unwrap();
+        assert!(s.taste.rerank_radio);
+        assert!(s.taste.excluded_playlists.is_empty());
+        let s: AppSettings = serde_json::from_str(r#"{"taste": {"excluded_playlists": ["LPabcdefgh"]}}"#).unwrap();
+        assert!(s.taste.rerank_radio);
+        assert_eq!(s.taste.excluded_playlists, ["LPabcdefgh"]);
     }
 }

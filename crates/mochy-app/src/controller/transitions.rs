@@ -266,6 +266,7 @@ impl PlayerController {
         self.mark_queue_dirty();
         self.generation += 1;
         self.loaded_uid = Some(token);
+        self.loaded_song = self.current().cloned();
         self.awaiting_engine = false;
         self.pos = 0.0;
         self.last_pos = 0.0;

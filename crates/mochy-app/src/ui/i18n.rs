@@ -1051,6 +1051,9 @@ static VI: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
         ("Refresh mixes", "Làm mới các mix"),
         ("Updating mixes…", "Đang cập nhật các mix…"),
         ("Updated", "Cập nhật"),
+        // ---- taste (engine) ----
+        ("Exclude from your taste profile", "Không tính vào hồ sơ gu"),
+        ("Use your taste to order radio", "Sắp xếp radio theo gu của bạn"),
     ])
 });
 

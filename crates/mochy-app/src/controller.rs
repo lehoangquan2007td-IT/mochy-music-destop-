@@ -25,6 +25,11 @@ const PREFETCH_AFTER_SECS: f64 = 5.0;
 const PREFETCH_TTL: Duration = Duration::from_secs(30 * 60);
 const QUEUE_SAVE_DEBOUNCE: Duration = Duration::from_millis(1500);
 const MIN_RECORD_SECS: f64 = 5.0;
+/// Leaving a track (next, previous, another song…) before this — or before
+/// half of a short track — records a skip (taste profile).
+const SKIP_MAX_SECS: f64 = 30.0;
+/// Recompute the taste profile after this many recorded plays / skips.
+const TASTE_REFRESH_EVERY: u32 = 5;
 /// Consecutive failed tracks before auto-skip gives up. Kept small: when
 /// YouTube is refusing streams every skip costs a full client walk (~8
 /// requests) and makes the bot-check worse.
@@ -63,6 +68,10 @@ pub struct CtlCfg {
     pub persistent_queue: bool,
     /// Gapless albums, sleep-timer fade (see `controller/transitions.rs`).
     pub transitions: mochy_core::settings::TransitionSettings,
+    /// Order radio results by the taste profile.
+    pub taste_rerank: bool,
+    /// Local playlists left out of the taste profile (for its refreshes).
+    pub taste_excluded: Vec<String>,
 }
 
 impl CtlCfg {
@@ -75,6 +84,8 @@ impl CtlCfg {
             replay_gain_preamp: s.audio_lab.normalize_preamp_db,
             persistent_queue: s.misc.persistent_queue,
             transitions: s.transitions.clone(),
+            taste_rerank: s.taste.rerank_radio,
+            taste_excluded: s.taste.excluded_playlists.clone(),
         }
     }
 }
@@ -107,6 +118,14 @@ pub struct PlayerController {
     radio_pending: Option<(String, bool)>,
     listened: f64,
     last_pos: f64,
+    /// The song the engine is playing (`loaded_uid`'s), for the history: the
+    /// queue already points elsewhere when a skip / jump records the play.
+    loaded_song: Option<Song>,
+    /// The user is leaving the loaded track (next / previous / jump / play
+    /// something else): an early exit records a skip. Consumed by the flush.
+    leaving: bool,
+    /// Plays / skips recorded since the last taste refresh.
+    taste_records: u32,
     fail_streak: usize,
     queue_dirty: Option<Instant>,
     /// Current loudness gain applied (for display / debugging).
@@ -173,6 +192,9 @@ impl PlayerController {
             radio_pending: None,
             listened: 0.0,
             last_pos: 0.0,
+            loaded_song: None,
+            leaving: false,
+            taste_records: 0,
             fail_streak: 0,
             queue_dirty: None,
             applied_gain_db: None,
@@ -213,6 +235,7 @@ impl PlayerController {
         }
         self.radio_seeds.clear();
         self.radio_pending = None;
+        self.leaving = true;
         self.queue.set_shuffle(false);
         self.queue.set(songs, start);
         if shuffle {
@@ -251,6 +274,7 @@ impl PlayerController {
 
     pub fn play_index(&mut self, idx: usize) {
         if self.queue.jump_to(idx) {
+            self.leaving = true;
             self.mark_queue_dirty();
             self.start_current(true);
         }
@@ -264,6 +288,7 @@ impl PlayerController {
                 self.stop();
             } else {
                 let play = self.is_playing();
+                self.leaving = true;
                 self.start_current(play);
             }
         }
@@ -353,6 +378,7 @@ impl PlayerController {
 
     pub fn next(&mut self) {
         if self.queue.advance(false).is_some() {
+            self.leaving = true;
             self.mark_queue_dirty();
             self.start_current(true);
         } else if let Some(seed) = self.queue.current_song().and_then(|s| s.video_id.clone()) {
@@ -367,6 +393,7 @@ impl PlayerController {
             return;
         }
         if self.queue.go_prev().is_some() {
+            self.leaving = true;
             self.mark_queue_dirty();
             self.start_current(true);
         }
@@ -495,6 +522,7 @@ impl PlayerController {
                 }
                 self.format = p.format;
                 self.loaded_uid = Some(uid);
+                self.loaded_song = self.current().cloned();
                 self.awaiting_engine = true;
                 tracing::info!(title = %self.current().map(|s| s.title.as_str()).unwrap_or(""), "loading track");
                 self.send(Command::Load { source: p.source, info, autoplay: self.want_play });
@@ -626,17 +654,43 @@ impl PlayerController {
         }
     }
 
+    /// Book the loaded track's listening: a play (≥ 5 s, the `event` table
+    /// behind Stats) and/or a skip (the user left it early, see [`is_skip`]).
     fn flush_play_record(&mut self) {
         let listened = std::mem::take(&mut self.listened);
-        if listened < MIN_RECORD_SECS || self.loaded_uid.is_none() {
+        let leaving = std::mem::take(&mut self.leaving);
+        if self.loaded_uid.is_none() {
             return;
         }
-        let Some(song) = self.current().cloned() else { return };
+        let record = listened >= MIN_RECORD_SECS;
+        // Started for real (not still loading) and the queue moved to another entry.
+        let left = leaving && !self.awaiting_engine && self.queue.current().map(|e| e.uid) != self.loaded_uid;
+        let duration = self.duration.filter(|d| *d > 0.0);
+        let skip = left && is_skip(listened, duration);
+        if !record && !skip {
+            return;
+        }
+        let Some(song) = self.loaded_song.clone().or_else(|| self.current().cloned()) else { return };
+        self.taste_records += 1;
+        let refresh_taste = self.taste_records >= TASTE_REFRESH_EVERY;
+        if refresh_taste {
+            self.taste_records = 0;
+        }
         let Some(svc) = &self.svc else { return };
         svc.db.run(move |db| {
             crate::db::ensure_song(db, &song);
-            crate::db::log_err("record_play", db.record_play(&song.id, listened));
+            if record {
+                crate::db::log_err("record_play", db.record_play(&song.id, listened));
+            }
+            if skip {
+                tracing::debug!(id = %song.id, listened, "skip recorded");
+                crate::db::log_err("record_skip", db.record_skip(&song.id, listened, duration));
+            }
         });
+        // Queued after the record on the same DB thread, so it sees it.
+        if refresh_taste {
+            crate::taste::refresh(svc, self.cfg.taste_excluded.clone());
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -737,6 +791,7 @@ impl PlayerController {
                 k.is_empty() || seen.insert(k)
             })
             .collect();
+        let fresh = self.taste_order(fresh);
         tracing::info!(count = fresh.len(), "radio appended");
         if fresh.is_empty() {
             return;
@@ -747,6 +802,18 @@ impl PlayerController {
             && self.queue.advance(false).is_some()
         {
             self.start_current(true);
+        }
+    }
+
+    /// Radio results ordered by the taste profile (Settings → "Use your
+    /// taste to order radio"); unchanged without a profile.
+    fn taste_order(&self, songs: Vec<Song>) -> Vec<Song> {
+        if !self.cfg.taste_rerank {
+            return songs;
+        }
+        match crate::taste::current() {
+            Some(p) if !p.is_empty() => crate::taste::rerank(&p, songs),
+            _ => songs,
         }
     }
 
@@ -836,6 +903,16 @@ fn prepared_from_stream(st: StreamResult, song: &Song) -> Prepared {
         format,
         source: TrackSource::Remote { url: st.url, headers: st.headers },
     }
+}
+
+/// Leaving after `listened` seconds is a skip: less than 30 s, and less
+/// than half of the track when its duration is known.
+fn is_skip(listened: f64, duration: Option<f64>) -> bool {
+    let limit = match duration.filter(|d| *d > 0.0) {
+        Some(d) => SKIP_MAX_SECS.min(d * 0.5),
+        None => SKIP_MAX_SECS,
+    };
+    listened < limit
 }
 
 /// Push every Audio Lab setting to the engine (startup + on change).
@@ -1023,6 +1100,59 @@ mod tests {
         c.play_songs(vec![Song::remote("x", "X")], 0, false);
         c.on_radio("v0".into(), Ok(vec![Song::remote("r", "R")]), false);
         assert_eq!(c.queue.len(), 1);
+    }
+
+    fn load_and_play(c: &mut PlayerController) {
+        let (generation, uid) = (c.generation, c.queue.current().unwrap().uid);
+        c.on_prepared(generation, uid, Ok(Prepared {
+            source: TrackSource::Local { path: "x.mp3".into() },
+            info: TrackInfo::default(),
+            loudness_db: None,
+            format: None,
+        }));
+        c.on_engine(Event::Playing);
+    }
+
+    #[test]
+    fn skip_rule() {
+        assert!(is_skip(0.0, None));
+        assert!(is_skip(29.0, Some(240.0)));
+        assert!(!is_skip(30.0, Some(240.0)));
+        assert!(!is_skip(31.0, None));
+        // Short track: half of it.
+        assert!(is_skip(9.0, Some(20.0)));
+        assert!(!is_skip(10.0, Some(20.0)));
+    }
+
+    #[test]
+    fn skips_are_counted_only_when_the_user_leaves_early() {
+        let mut c = ctl();
+        c.play_songs(songs(4), 0, false);
+        load_and_play(&mut c);
+        assert_eq!(c.loaded_song.as_ref().map(|s| s.id.as_str()), Some("v0"));
+        // 2 s then next: a skip (under the 5 s play minimum, still booked).
+        c.listened = 2.0;
+        c.next();
+        assert_eq!(c.taste_records, 1);
+        // Next while the new track is still loading: nothing to book.
+        c.next();
+        assert_eq!(c.taste_records, 1);
+        load_and_play(&mut c);
+        // Natural end after a short listen: not a skip.
+        c.listened = 2.0;
+        c.on_engine(Event::Finished);
+        assert_eq!(c.taste_records, 1);
+        load_and_play(&mut c);
+        // Long enough to count as listened: a play, not a skip, still one record.
+        c.listened = 45.0;
+        c.play_index(0);
+        assert_eq!(c.taste_records, 2);
+        load_and_play(&mut c);
+        // Restarting with "previous" past 3 s isn't leaving.
+        c.pos = 10.0;
+        c.listened = 1.0;
+        c.prev();
+        assert_eq!(c.taste_records, 2);
     }
 
     #[test]
