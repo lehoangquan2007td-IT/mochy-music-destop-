@@ -69,6 +69,10 @@ GPL-3.0) written in **pure Rust** (no Node/Electron): `egui` GUI, `symphonia` +
   save albums/artists/playlists; persistent queue.
 - **Explore**: new releases, charts, moods & genres, "see all" pages, home mood chips,
   local shelves (quick picks, recently played, forgotten favorites) and infinite scroll.
+- **Taste profile & mixes**: computed locally from plays, skips, likes and playlists (2-year
+  window, 30-day half-life); "Your taste" page (top artists/songs, artists by time of day,
+  most skipped), taste-ordered radio, and "Made for you" Daily Mix 1–3, Discover and
+  time-of-day mixes on Home (generated in the background, cached, refreshable).
 - **Stats & Recap**: listening time, top songs/artists/albums per week/month/year,
   charts by day/hour/weekday, and a paged recap story.
 - **Transitions**: gapless, crossfade and beat-aware Crossmix (tempo/beat/key analysis, 14 styles),
