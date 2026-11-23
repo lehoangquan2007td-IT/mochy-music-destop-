@@ -48,6 +48,7 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, route: &Route, playlists: &[Playlist], lo
         (Icon::Search, tr("Search"), Route::Search, 1),
         (Icon::Library, tr("Library"), Route::Library(LibTab::Songs), 2),
         (Icon::Chart, tr("Stats"), Route::Stats, 6),
+        (Icon::Taste, tr("Your taste"), Route::Taste, 7),
         (Icon::AudioLab, "Audio Lab", Route::AudioLab, 3),
         (Icon::Settings, tr("Settings"), Route::Settings, 4),
     ];

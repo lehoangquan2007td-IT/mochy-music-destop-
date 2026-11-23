@@ -42,6 +42,11 @@ pub enum Icon {
     ListView,
     Bookmark,
     BookmarkFilled,
+    // ---- taste (page) ----
+    /// "Your taste": a sparkle.
+    Taste,
+    Sun,
+    Moon,
 }
 
 /// Map unit coordinates (0..1) into `r`.
@@ -315,6 +320,66 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 painter.add(Shape::convex_polygon(vec![p(r, 0.26, 0.14), p(r, 0.74, 0.14), p(r, 0.74, 0.86), p(r, 0.5, 0.66)], color, Stroke::NONE));
                 painter.add(Shape::convex_polygon(vec![p(r, 0.26, 0.14), p(r, 0.5, 0.66), p(r, 0.26, 0.86)], color, Stroke::NONE));
             }
+            painter.add(Shape::closed_line(pts, st));
+        }
+        // ---- taste (page) ----
+        Icon::Taste => {
+            // Four-point sparkle with concave sides + a small twinkle.
+            let c = p(r, 0.44, 0.56);
+            let pts: Vec<Pos2> = (0..32)
+                .map(|i| {
+                    let t = i as f32 / 32.0 * std::f32::consts::TAU;
+                    // Astroid-like curve: tips on the axes, pinched diagonals.
+                    let (x, y) = (t.cos().powi(3), t.sin().powi(3));
+                    c + vec2(x, y) * s * 0.36
+                })
+                .collect();
+            painter.add(Shape::closed_line(pts, st));
+            let t = p(r, 0.80, 0.22);
+            seg(t + vec2(0.0, -s * 0.10), t + vec2(0.0, s * 0.10));
+            seg(t + vec2(-s * 0.10, 0.0), t + vec2(s * 0.10, 0.0));
+        }
+        Icon::Sun => {
+            let c = p(r, 0.5, 0.5);
+            painter.circle_stroke(c, s * 0.17, st);
+            for i in 0..8 {
+                let a = i as f32 / 8.0 * std::f32::consts::TAU;
+                let d = vec2(a.cos(), a.sin());
+                seg(c + d * s * 0.29, c + d * s * 0.40);
+            }
+        }
+        Icon::Moon => {
+            // Crescent: outer arc and an inner arc offset towards the top-right.
+            let c = p(r, 0.5, 0.5);
+            let ro = s * 0.34;
+            let ci = c + vec2(s * 0.16, -s * 0.12);
+            let ri = s * 0.29;
+            // Intersections of the two circles bound both arcs.
+            let d = (ci - c).length();
+            let a = (ro * ro - ri * ri + d * d) / (2.0 * d);
+            let h = (ro * ro - a * a).max(0.0).sqrt();
+            let u = (ci - c) / d;
+            let m = c + u * a;
+            let n = vec2(-u.y, u.x);
+            let (p1, p2) = (m + n * h, m - n * h);
+            let ang = |o: Pos2, q: Pos2| (q.y - o.y).atan2(q.x - o.x);
+            // Arc on circle (o, rad) from q0 to q1, going the way whose midpoint
+            // is far from (`far`) or near to `target`.
+            let arc = |o: Pos2, rad: f32, q0: Pos2, q1: Pos2, target: Pos2, far: bool| -> Vec<Pos2> {
+                let a0 = ang(o, q0);
+                let mut a1 = ang(o, q1);
+                if a1 < a0 {
+                    a1 += std::f32::consts::TAU;
+                }
+                let mid = |a0: f32, a1: f32| o + vec2(((a0 + a1) / 2.0).cos(), ((a0 + a1) / 2.0).sin()) * rad;
+                let alt = a1 - std::f32::consts::TAU;
+                let (d1, d2) = ((mid(a0, a1) - target).length(), (mid(a0, alt) - target).length());
+                let end = if (d1 > d2) == far { a1 } else { alt };
+                (0..=20).map(|i| o + vec2((a0 + (end - a0) * i as f32 / 20.0).cos(), (a0 + (end - a0) * i as f32 / 20.0).sin()) * rad).collect()
+            };
+            // Outer arc away from the bite, then the inner arc back inside it.
+            let mut pts = arc(c, ro, p1, p2, ci, true);
+            pts.extend(arc(ci, ri, p2, p1, c, false).into_iter().skip(1));
             painter.add(Shape::closed_line(pts, st));
         }
     }

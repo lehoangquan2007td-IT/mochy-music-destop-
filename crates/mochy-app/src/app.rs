@@ -1312,6 +1312,7 @@ impl MochyApp {
                         Route::LibraryArtist(id) => pages::library_views::local_artist(ui, &mut cx, &self.browse, id),
                         Route::LibraryAlbum(id) => pages::library_views::local_album(ui, &mut cx, &self.browse, id),
                         Route::Stats => pages::stats::show(ui, &mut cx, &mut self.browse),
+                        Route::Taste => pages::taste::show(ui, &mut cx, &self.browse),
                     }
                 });
             });
@@ -1558,7 +1559,7 @@ impl MochyApp {
     fn run_shots(&mut self, ctx: &egui::Context) {
         let Some(sr) = self.shots.as_mut() else { return };
         // (name, route, seconds to wait before the shot — Home waits for network/art)
-        let steps: [(&str, Route, f32); 16] = [
+        let steps: [(&str, Route, f32); 17] = [
             ("home", Route::Home, 12.0),
             ("search", Route::Search, 3.0),
             ("library", Route::Library(LibTab::History), 3.0),
@@ -1576,6 +1577,7 @@ impl MochyApp {
             ("lib_recent", Route::Library(LibTab::RecentlyAdded), 3.0),
             ("stats", Route::Stats, 4.0),
             ("recap", Route::Stats, 3.0),
+            ("taste", Route::Taste, 4.0),
         ];
         ctx.request_repaint_after(Duration::from_millis(100));
         // `MOCHY_SHOTS_ONLY=now_playing,settings`: just those shots.

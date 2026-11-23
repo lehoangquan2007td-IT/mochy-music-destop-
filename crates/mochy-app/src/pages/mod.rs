@@ -15,6 +15,8 @@ pub mod library_views;
 pub mod stats;
 // ---- taste (mixes) ----
 pub mod mixes;
+// ---- taste (page) ----
+pub mod taste;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

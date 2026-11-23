@@ -71,6 +71,9 @@ pub enum Route {
     LibraryArtist(String),
     LibraryAlbum(String),
     Stats,
+    // ---- taste (page) ----
+    /// "Your taste" profile page.
+    Taste,
 }
 
 impl Route {
@@ -84,6 +87,7 @@ impl Route {
             Route::Settings => 4,
             Route::Explore | Route::MoodsGenres | Route::Charts | Route::NewReleases | Route::Browse { .. } => 5,
             Route::Stats => 6,
+            Route::Taste => 7,
         }
     }
 }
