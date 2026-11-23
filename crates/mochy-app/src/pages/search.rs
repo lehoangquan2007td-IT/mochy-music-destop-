@@ -262,7 +262,7 @@ fn results(ui: &mut Ui, cx: &mut Ctx, st: &mut SearchState, res: &SearchResults)
         let n = if all { 6.min(st.songs.len()) } else { st.songs.len() };
         let songs = st.songs.clone();
         for i in 0..n {
-            widgets::song_row(ui, cx, &songs, i, RowOpts { show_album: true, ..Default::default() });
+            widgets::song_row(ui, cx, &songs, i, RowOpts { show_album: true, radio: true, ..Default::default() });
         }
         if all && st.songs.len() > n && ui.link(tr("Show all songs")).clicked() {
             st.filter = Filter::Songs;
@@ -280,7 +280,7 @@ fn results(ui: &mut Ui, cx: &mut Ctx, st: &mut SearchState, res: &SearchResults)
         let n = if all { 4.min(st.videos.len()) } else { st.videos.len() };
         let vids = st.videos.clone();
         for i in 0..n {
-            widgets::song_row(ui, cx, &vids, i, RowOpts::default());
+            widgets::song_row(ui, cx, &vids, i, RowOpts { radio: true, ..Default::default() });
         }
         ui.add_space(10.0);
     }

@@ -99,7 +99,12 @@ pub struct PlayerController {
     prefetch: HashMap<String, (StreamResult, Instant)>,
     prefetch_requested: HashSet<String>,
     radio_inflight: bool,
+    /// Seeds asked for since the queue was last replaced. A radio answer
+    /// whose seed is no longer here is stale (the user started something
+    /// else meanwhile) and is dropped.
     radio_seeds: HashSet<String>,
+    /// Radio wanted while another request was in flight; sent afterwards.
+    radio_pending: Option<(String, bool)>,
     listened: f64,
     last_pos: f64,
     fail_streak: usize,
@@ -165,6 +170,7 @@ impl PlayerController {
             prefetch_requested: HashSet::new(),
             radio_inflight: false,
             radio_seeds: HashSet::new(),
+            radio_pending: None,
             listened: 0.0,
             last_pos: 0.0,
             fail_streak: 0,
@@ -206,6 +212,7 @@ impl PlayerController {
             return;
         }
         self.radio_seeds.clear();
+        self.radio_pending = None;
         self.queue.set_shuffle(false);
         self.queue.set(songs, start);
         if shuffle {
@@ -674,7 +681,14 @@ impl PlayerController {
     }
 
     pub fn request_radio(&mut self, seed: String, play_after: bool) {
-        if self.radio_inflight || !self.radio_seeds.insert(seed.clone()) {
+        if self.radio_inflight {
+            // Don't lose it: the answer in flight may be for an old queue.
+            if !self.radio_seeds.contains(&seed) {
+                self.radio_pending = Some((seed, play_after));
+            }
+            return;
+        }
+        if !self.radio_seeds.insert(seed.clone()) {
             return;
         }
         let Some(svc) = self.svc.clone() else { return };
@@ -693,6 +707,14 @@ impl PlayerController {
 
     pub fn on_radio(&mut self, seed: String, result: Result<Vec<Song>, String>, play_after: bool) {
         self.radio_inflight = false;
+        let stale = !self.radio_seeds.contains(&seed);
+        if let Some((next, after)) = self.radio_pending.take() {
+            self.request_radio(next, after);
+        }
+        if stale {
+            tracing::debug!(%seed, "dropping stale radio");
+            return;
+        }
         let songs = match result {
             Ok(s) => s,
             Err(e) => {
@@ -704,9 +726,16 @@ impl PlayerController {
                 return;
             }
         };
+        // Skip other uploads of songs already queued ("X (Lofi)", "X | MV",
+        // "X [Lyric Video]"…): same title once the decorations are gone.
+        let mut seen: HashSet<String> = self.queue.songs().map(|s| title_key(&s.title)).collect();
         let fresh: Vec<Song> = songs
             .into_iter()
             .filter(|s| s.video_id.as_deref() != Some(seed.as_str()) && !self.queue.contains_id(&s.id))
+            .filter(|s| {
+                let k = title_key(&s.title);
+                k.is_empty() || seen.insert(k)
+            })
             .collect();
         tracing::info!(count = fresh.len(), "radio appended");
         if fresh.is_empty() {
@@ -829,6 +858,30 @@ pub fn apply_audio_lab(engine: &EngineHandle, lab: &AudioLab) {
     engine.send(Command::SetSpatial { spatial: lab.spatial.clone() });
 }
 
+/// A song title reduced to what identifies the song: lowercase, without
+/// bracketed parts and ` - ` / ` | ` suffixes (version, "Official MV"…).
+fn title_key(title: &str) -> String {
+    let mut out = String::with_capacity(title.len());
+    let mut depth = 0usize;
+    for ch in title.chars() {
+        match ch {
+            '(' | '[' | '{' | '【' | '「' => depth += 1,
+            ')' | ']' | '}' | '】' | '」' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    let cut = [" | ", " - ", " – ", " — ", " ft.", " feat."]
+        .iter()
+        .filter_map(|sep| out.to_lowercase().find(sep))
+        .min();
+    let mut lower = out.to_lowercase();
+    if let Some(i) = cut {
+        lower.truncate(i);
+    }
+    lower.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,6 +989,40 @@ mod tests {
         c.on_radio("v0".into(), Ok(vec![Song::remote("r1", "R1"), Song::remote("v0", "seed")]), true);
         assert_eq!(c.queue.len(), 2);
         assert_eq!(c.current().unwrap().id, "r1");
+    }
+
+    #[test]
+    fn title_key_strips_versions() {
+        assert_eq!(title_key("Nơi Này Có Anh"), "nơi này có anh");
+        assert_eq!(title_key("Nơi Này Có Anh (Lofi Version)"), "nơi này có anh");
+        assert_eq!(title_key("NƠI NÀY CÓ ANH | OFFICIAL MUSIC VIDEO"), "nơi này có anh");
+        assert_eq!(title_key("Nơi này có anh - Sơn Tùng M-TP [Lyric Video]"), "nơi này có anh");
+        assert_eq!(title_key("Tìm Em (feat. Bảo Anh)"), "tìm em");
+        assert_ne!(title_key("Chúng Ta Của Hiện Tại"), title_key("Nơi Này Có Anh"));
+    }
+
+    #[test]
+    fn radio_skips_other_versions_and_stale_answers() {
+        let mut c = ctl();
+        c.play_songs(vec![Song::remote("v0", "Nơi Này Có Anh")], 0, false);
+        c.radio_seeds.insert("v0".into());
+        c.on_radio(
+            "v0".into(),
+            Ok(vec![
+                Song::remote("a", "Nơi Này Có Anh (Lofi)"),
+                Song::remote("b", "Chúng Ta Của Hiện Tại"),
+                Song::remote("c", "NƠI NÀY CÓ ANH | OFFICIAL MV"),
+                Song::remote("d", "Chúng ta của hiện tại [Lyrics]"),
+                Song::remote("e", "Thằng Điên"),
+            ]),
+            false,
+        );
+        let ids: Vec<_> = c.queue.songs().map(|s| s.id.clone()).collect();
+        assert_eq!(ids, ["v0", "b", "e"]);
+        // A new queue makes an older answer stale.
+        c.play_songs(vec![Song::remote("x", "X")], 0, false);
+        c.on_radio("v0".into(), Ok(vec![Song::remote("r", "R")]), false);
+        assert_eq!(c.queue.len(), 1);
     }
 
     #[test]

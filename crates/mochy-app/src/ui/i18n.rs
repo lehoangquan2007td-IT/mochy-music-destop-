@@ -1010,6 +1010,8 @@ static VI: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
         ("Sync the library when Mochy starts (at most every 6 hours)", "Đồng bộ thư viện khi mở Mochy (tối đa 6 giờ một lần)"),
         ("Read-only: Mochy never changes your YouTube account. Liked songs are added to your likes here; synced playlists, albums and artists are saved to the library and removed again when you remove them on YouTube. The session is encrypted for your Windows user and only sent to YouTube.", "Chỉ đọc: Mochy không bao giờ thay đổi tài khoản YouTube của bạn. Bài hát đã thích được thêm vào mục Đã thích ở đây; danh sách phát, album và nghệ sĩ được lưu vào thư viện và tự gỡ khi bạn gỡ chúng trên YouTube. Phiên đăng nhập được mã hóa theo tài khoản Windows của bạn và chỉ gửi tới YouTube."),
         ("Sign in again", "Đăng nhập lại"),
+        ("Account settings", "Cài đặt tài khoản"),
+        ("The session expired. Sign in again to keep syncing.", "Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại để tiếp tục đồng bộ."),
         ("Sign in with Google", "Đăng nhập bằng Google"),
         ("Signing in inside the app needs Windows — paste the cookie instead.", "Đăng nhập trong app cần Windows — hãy dán cookie thay thế."),
         ("Syncing your YouTube library…", "Đang đồng bộ thư viện YouTube…"),

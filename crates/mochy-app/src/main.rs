@@ -30,6 +30,7 @@ mod services;
 mod smoke;
 mod songedit;
 mod stream_facts;
+mod taste;
 mod tray;
 mod ui;
 mod widgets;

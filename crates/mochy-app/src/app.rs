@@ -1243,6 +1243,11 @@ impl MochyApp {
                         ui.add_space(12.0);
                         ui.label(RichText::new(format!("Offline: {}", short(e, 80))).size(12.0).color(Color32::from_rgb(0xFF, 0x9A, 0x9A)));
                     }
+                    // Top-right corner: the YouTube account button.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        crate::account::corner_button(ui, &mut cx);
+                    });
                 });
                 ui.add_space(6.0);
                 let route = self.nav.current().clone();
