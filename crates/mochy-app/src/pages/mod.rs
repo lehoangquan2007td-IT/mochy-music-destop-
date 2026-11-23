@@ -13,6 +13,8 @@ pub mod sidebar;
 pub mod explore;
 pub mod library_views;
 pub mod stats;
+// ---- taste (page) ----
+pub mod taste;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
