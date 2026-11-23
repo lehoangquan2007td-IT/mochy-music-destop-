@@ -6,7 +6,7 @@
 
 ### ⬇️ TẢI BẢN MỚI NHẤT (.exe) — CHỈ 1 CLICK
 
-[![Download](https://img.shields.io/badge/⬇️_Tải_mochy--app.exe-v0.1.7-2ea44f?style=for-the-badge&logo=github)](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.7/mochy-music-desktop-v0.1.7-windows-x64.zip)
+[![Download](https://img.shields.io/badge/⬇️_Tải_mochy--app.exe-v0.1.8-2ea44f?style=for-the-badge&logo=github)](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.8/mochy-music-desktop-v0.1.8-windows-x64.zip)
 
 [![Latest release](https://img.shields.io/github/v/release/lehoangquan2007td-IT/mochy-music-destop-)](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest)
 [![License](https://img.shields.io/github/license/lehoangquan2007td-IT/mochy-music-destop-)](LICENSE)
@@ -17,13 +17,14 @@
 
 ## 📥 Hướng dẫn tải về nhanh (Windows 10/11 x64)
 
-1. Bấm nút **⬇️ Tải** ở trên (hoặc vào **[Releases](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest)**) → nhận file `mochy-music-desktop-v0.1.7-windows-x64.zip` (~17,7 MB).
+1. Bấm nút **⬇️ Tải** ở trên (hoặc vào **[Releases](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/latest)**) → nhận file `mochy-music-desktop-v0.1.8-windows-x64.zip` (~18 MB).
 2. Giải nén, giữ **cả 3 file cùng thư mục** (`mochy-app.exe`, `mochy-signin.exe`, `WebView2Loader.dll`) → chạy **`mochy-app.exe`**. Không cần cài đặt, không cần runtime nào thêm (đóng bản đang chạy trước khi đè).
 3. Xong! Dữ liệu app nằm trong `%LOCALAPPDATA%\MochyMusic`. Phiên bản hiển thị trong **Settings**.
 
 | Bản phát hành | Ngày | Nội dung | Gói tải về |
 |---|---|---|---|
-| **v0.1.7** (mới nhất) | 19/11/2026 | Đăng nhập YouTube (home cá nhân, Mixes, đồng bộ thư viện một chiều), chuyển style player trong Now Playing, cover playlist tự chọn, frame pacing + giảm RAM | [zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.7/mochy-music-desktop-v0.1.7-windows-x64.zip) |
+| **v0.1.8** (mới nhất) | 23/11/2026 | Gu của bạn kiểu Spotify (trang Gu của bạn, kệ "Dành cho bạn": Mix hằng ngày + Khám phá), radio sắp theo gu và lọc bản trùng, bấm bài khi tìm kiếm sẽ phát kèm radio, nút tài khoản ở góc (đăng nhập/đăng xuất nhanh), sửa thống kê ghi nhầm bài khi chuyển bài | [zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.8/mochy-music-desktop-v0.1.8-windows-x64.zip) |
+| v0.1.7 | 19/11/2026 | Đăng nhập YouTube (home cá nhân, Mixes, đồng bộ thư viện một chiều), chuyển style player trong Now Playing, cover playlist tự chọn, frame pacing + giảm RAM | [zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.7/mochy-music-desktop-v0.1.7-windows-x64.zip) |
 | v0.1.6 | 17/11/2026 | Sửa triệt để lyric chạy trước nhạc, nâng cấp giao diện toàn diện (Explore, Library, Audio Lab v2, Player styles, Tray icon chạy ngầm) | [zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.6/mochy-music-desktop-v0.1.6-windows-x64.zip) |
 | v0.1.5 | 16/11/2026 | Tối ưu ảnh bìa: cover-fit khít khung, nguồn maxres nét hơn, cắt dải đen, mipmap | [zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.5/mochy-music-desktop-v0.1.5-windows-x64.zip) |
 | v0.1.4 | 16/11/2026 | Sửa lyric chạy trước nhạc: offset bù trễ toàn cục (Settings → Lyrics) + bấm lyric seek đúng nhịp | [zip](https://github.com/lehoangquan2007td-IT/mochy-music-destop-/releases/download/v0.1.4/mochy-music-desktop-v0.1.4-windows-x64.zip) |
