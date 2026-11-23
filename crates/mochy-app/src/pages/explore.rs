@@ -250,6 +250,10 @@ pub fn home_section(ui: &mut Ui, cx: &mut Ctx, st: &BrowseState, data: &Data, ke
         "recent" => (tr("Recently played").into(), Some(if st.lib.recent_songs.is_empty() { data.history.clone() } else { st.lib.recent_songs.clone() })),
         "most" => (tr("Most played").into(), Some(data.most_played.clone())),
         "forgotten" => (tr("Forgotten favorites").into(), Some(st.lib.forgotten.clone())),
+        k if k.starts_with("mix:") => {
+            super::mixes::page(ui, cx, &k["mix:".len()..]);
+            return;
+        }
         k => {
             let idx: Option<usize> = k.strip_prefix("yt:").and_then(|i| i.parse().ok());
             let Some(sec) = idx.and_then(|i| st.home.sections.get(i)) else {

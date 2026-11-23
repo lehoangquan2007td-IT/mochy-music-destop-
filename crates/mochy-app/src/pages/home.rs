@@ -36,6 +36,11 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, data: &Data, st: &BrowseState) -> bool {
         ui.add_space(10.0);
     }
 
+    // Taste mixes ("Made for you"), above the YouTube shelves.
+    if st.home.selected.is_none() {
+        super::mixes::shelf(ui, cx);
+    }
+
     // Signed-in YouTube account: mixes / music videos from youtube.com, YouTube history.
     let extras = crate::account::home_extras();
     // Signed in, YouTube Music's own "Quick picks" (the first song-row shelf of

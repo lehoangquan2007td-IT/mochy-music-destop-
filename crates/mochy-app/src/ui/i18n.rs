@@ -1038,6 +1038,19 @@ static VI: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
         ("Show Mochy", "Mở Mochy"),
         ("Quit Mochy", "Thoát Mochy"),
         ("Pause", "Tạm dừng"),
+        // ---- taste (mixes) ----
+        ("Made for you", "Dành cho bạn"),
+        ("Daily Mix", "Mix hằng ngày"),
+        ("Discover for you", "Khám phá dành cho bạn"),
+        ("Morning mix", "Gu buổi sáng"),
+        ("Afternoon mix", "Gu buổi chiều"),
+        ("Evening mix", "Gu buổi tối"),
+        ("Night mix", "Gu buổi đêm"),
+        ("and more", "và nhiều hơn"),
+        ("New songs picked for your taste", "Bài mới hợp gu của bạn"),
+        ("Refresh mixes", "Làm mới các mix"),
+        ("Updating mixes…", "Đang cập nhật các mix…"),
+        ("Updated", "Cập nhật"),
     ])
 });
 

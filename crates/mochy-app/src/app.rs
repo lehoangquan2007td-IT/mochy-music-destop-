@@ -280,6 +280,11 @@ impl MochyApp {
         app.load_home();
         app.refresh_library();
         app.refresh_devices();
+        // MERGE(taste-trigger): temporary, so the mixes have a profile while
+        // the taste engine's own refresh triggers are not merged yet.
+        if crate::taste::current().is_none() {
+            crate::taste::refresh(&app.svc, Vec::new());
+        }
         app
     }
 
@@ -1425,6 +1430,8 @@ impl eframe::App for MochyApp {
             ctx.request_repaint_after(crate::pages::search::SUGGEST_DEBOUNCE);
         }
         self.settings_housekeeping(ctx);
+        // "Made for you" mixes: load the cache, regenerate when stale.
+        crate::taste::mixes::tick(&self.svc);
         if self.player.is_playing() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }

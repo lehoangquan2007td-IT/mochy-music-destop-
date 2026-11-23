@@ -860,7 +860,7 @@ pub fn apply_audio_lab(engine: &EngineHandle, lab: &AudioLab) {
 
 /// A song title reduced to what identifies the song: lowercase, without
 /// bracketed parts and ` - ` / ` | ` suffixes (version, "Official MV"…).
-fn title_key(title: &str) -> String {
+pub(crate) fn title_key(title: &str) -> String {
     let mut out = String::with_capacity(title.len());
     let mut depth = 0usize;
     for ch in title.chars() {

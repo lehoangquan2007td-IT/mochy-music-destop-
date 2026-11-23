@@ -11,6 +11,7 @@
 //! `engine.rs` holds the scoring (`compute`).
 
 mod engine;
+pub mod mixes;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
