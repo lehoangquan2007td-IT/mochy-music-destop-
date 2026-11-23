@@ -225,6 +225,9 @@ impl MochyApp {
 
         crate::downloads::init(svc.clone(), ctx.clone(), &settings);
         crate::songedit::init(&svc);
+        // Taste profile: first compute on the DB thread (queued behind its open).
+        crate::taste::refresh(&svc, settings.taste.excluded_playlists.clone());
+        crate::widgets::menus::set_taste_excluded(&ctx, &settings.taste.excluded_playlists);
         let images = ImageCache::new(svc.clone());
         let window_seen = (settings.misc.window_width, settings.misc.window_height, settings.misc.window_maximized);
         let mut app = Self {
@@ -710,6 +713,16 @@ impl MochyApp {
             }
             Action::ChangePlaylistCover(id) => crate::playlist_cover::pick(&self.svc, id),
             Action::RemovePlaylistCover(id) => crate::playlist_cover::remove(&self.svc, id),
+            Action::ToggleTasteExclude(id) => {
+                // Saved and applied (profile refresh) by `settings_housekeeping`.
+                let ex = &mut self.settings.taste.excluded_playlists;
+                match ex.iter().position(|x| *x == id) {
+                    Some(i) => {
+                        ex.remove(i);
+                    }
+                    None => ex.push(id),
+                }
+            }
             Action::SetNowPlaying(open) => {
                 self.np_open = open;
                 if open {
@@ -975,6 +988,10 @@ impl MochyApp {
             }
             if old.lyrics.provider_order != self.settings.lyrics.provider_order || (!old.lyrics.show && self.settings.lyrics.show) {
                 self.lyrics_for = None;
+            }
+            if old.taste.excluded_playlists != self.settings.taste.excluded_playlists {
+                crate::widgets::menus::set_taste_excluded(ctx, &self.settings.taste.excluded_playlists);
+                crate::taste::refresh(&self.svc, self.settings.taste.excluded_playlists.clone());
             }
         }
         if let Some(t) = self.settings_dirty {

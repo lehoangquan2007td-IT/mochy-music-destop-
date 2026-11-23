@@ -29,6 +29,8 @@ mod offline;
 pub use offline::{DownloadRow, EditedArtist, KIND_CACHE, KIND_DOWNLOAD, SongEdit};
 mod song_tuning;
 pub use song_tuning::SongTuningRow;
+mod taste;
+pub use taste::{SkipRow, TastePlay};
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -516,6 +518,7 @@ impl Db {
             )?;
         }
         offline::migrate(&conn)?;
+        taste::migrate(&conn)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self { conn: Mutex::new(conn) })
     }

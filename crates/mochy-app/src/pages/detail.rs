@@ -225,6 +225,8 @@ pub fn local_playlist(ui: &mut Ui, cx: &mut Ctx, pl: Option<&Playlist>, songs: O
                     ui.close();
                     cx.act(Action::RemovePlaylistCover(id.clone()));
                 }
+                ui.separator();
+                menus::taste_exclude_item(ui, cx, &id);
             });
         }
     });

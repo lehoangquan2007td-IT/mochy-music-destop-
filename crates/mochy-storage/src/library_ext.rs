@@ -196,16 +196,17 @@ impl Db {
         Ok(())
     }
 
-    /// Remove every play of a song from the history.
+    /// Remove every play (and skip) of a song from the history.
     pub fn delete_song_history(&self, song_id: &str) -> StorageResult<()> {
         self.conn().execute("DELETE FROM event WHERE songId = ?1", params![song_id])?;
-        Ok(())
+        self.delete_song_skips(song_id)
     }
 
     /// Clear the whole listening history (Kotlin `clearListenHistory`).
     pub fn clear_history(&self) -> StorageResult<()> {
         self.conn().execute("DELETE FROM event", [])?;
-        Ok(())
+        // Skips are history too (taste profile).
+        self.clear_skips()
     }
 
     // -- saved albums / artists / playlists ----------------------------------

@@ -32,6 +32,32 @@ pub fn saved(ui: &Ui) -> Arc<Saved> {
     ui.ctx().data(|d| d.get_temp::<Arc<Saved>>(saved_id())).unwrap_or_default()
 }
 
+fn taste_excluded_id() -> Id {
+    Id::unique("mochy_taste_excluded")
+}
+
+/// Publish the playlists left out of the taste profile (called by the app
+/// at startup and when the setting changes).
+pub fn set_taste_excluded(ctx: &egui::Context, ids: &[String]) {
+    let set: Arc<std::collections::HashSet<String>> = Arc::new(ids.iter().cloned().collect());
+    ctx.data_mut(|d| d.insert_temp(taste_excluded_id(), set));
+}
+
+fn is_taste_excluded(ui: &Ui, playlist_id: &str) -> bool {
+    ui.ctx()
+        .data(|d| d.get_temp::<Arc<std::collections::HashSet<String>>>(taste_excluded_id()))
+        .is_some_and(|s| s.contains(playlist_id))
+}
+
+/// "Exclude from your taste profile" toggle of a local playlist's menu.
+pub fn taste_exclude_item(ui: &mut Ui, cx: &mut Ctx, playlist_id: &str) {
+    let mut excluded = is_taste_excluded(ui, playlist_id);
+    if ui.checkbox(&mut excluded, tr("Exclude from your taste profile")).clicked() {
+        ui.close();
+        cx.act(Action::ToggleTasteExclude(playlist_id.to_string()));
+    }
+}
+
 fn browse(cx: &mut Ctx, a: BrowseAction) {
     cx.act(Action::Browse(a));
 }
@@ -196,6 +222,7 @@ pub fn playlist_menu(ui: &mut Ui, cx: &mut Ctx, p: &Playlist) {
             if crate::playlist_cover::has_custom(p) && button(ui, tr("Remove custom cover")) {
                 cx.act(Action::RemovePlaylistCover(p.id.clone()));
             }
+            taste_exclude_item(ui, cx, &p.id);
         }
         if button(ui, tr("Delete…")) {
             cx.act(Action::DeletePlaylist(p.id.clone()));

@@ -1038,6 +1038,9 @@ static VI: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
         ("Show Mochy", "Mở Mochy"),
         ("Quit Mochy", "Thoát Mochy"),
         ("Pause", "Tạm dừng"),
+        // ---- taste (engine) ----
+        ("Exclude from your taste profile", "Không tính vào hồ sơ gu"),
+        ("Use your taste to order radio", "Sắp xếp radio theo gu của bạn"),
     ])
 });
 
