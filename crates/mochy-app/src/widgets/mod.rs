@@ -387,6 +387,9 @@ pub struct RowOpts<'a> {
     pub playlist_ctx: Option<&'a str>,
     /// History event id, enables "remove from history".
     pub history_event: Option<i64>,
+    /// Play the song with its radio instead of the surrounding list (search
+    /// results: the list is mostly other uploads of the same song).
+    pub radio: bool,
 }
 
 pub const ROW_H: f32 = 56.0;
@@ -497,7 +500,11 @@ pub fn song_row(ui: &mut Ui, cx: &mut Ctx, list: &Arc<Vec<Song>>, idx: usize, op
     });
 
     if resp.double_clicked() || lead_resp.clicked() {
-        cx.act(Action::PlayList { songs: list.clone(), start: idx, shuffle: false });
+        if opts.radio && song.video_id.is_some() {
+            cx.act(Action::PlaySong(song.clone()));
+        } else {
+            cx.act(Action::PlayList { songs: list.clone(), start: idx, shuffle: false });
+        }
     }
 }
 

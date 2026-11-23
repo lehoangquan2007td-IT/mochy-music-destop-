@@ -76,6 +76,13 @@ impl Bus {
         (Self { tx, ctx: Arc::new(OnceLock::new()) }, rx)
     }
 
+    /// Wake the UI (e.g. after publishing shared state).
+    pub fn request_repaint(&self) {
+        if let Some(ctx) = self.ctx.get() {
+            ctx.request_repaint();
+        }
+    }
+
     pub fn set_ctx(&self, ctx: egui::Context) {
         let _ = self.ctx.set(ctx);
     }

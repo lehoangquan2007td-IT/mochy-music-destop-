@@ -225,6 +225,9 @@ impl MochyApp {
 
         crate::downloads::init(svc.clone(), ctx.clone(), &settings);
         crate::songedit::init(&svc);
+        // Taste profile: first compute on the DB thread (queued behind its open).
+        crate::taste::refresh(&svc, settings.taste.excluded_playlists.clone());
+        crate::widgets::menus::set_taste_excluded(&ctx, &settings.taste.excluded_playlists);
         let images = ImageCache::new(svc.clone());
         let window_seen = (settings.misc.window_width, settings.misc.window_height, settings.misc.window_maximized);
         let mut app = Self {
@@ -710,6 +713,16 @@ impl MochyApp {
             }
             Action::ChangePlaylistCover(id) => crate::playlist_cover::pick(&self.svc, id),
             Action::RemovePlaylistCover(id) => crate::playlist_cover::remove(&self.svc, id),
+            Action::ToggleTasteExclude(id) => {
+                // Saved and applied (profile refresh) by `settings_housekeeping`.
+                let ex = &mut self.settings.taste.excluded_playlists;
+                match ex.iter().position(|x| *x == id) {
+                    Some(i) => {
+                        ex.remove(i);
+                    }
+                    None => ex.push(id),
+                }
+            }
             Action::SetNowPlaying(open) => {
                 self.np_open = open;
                 if open {
@@ -975,6 +988,10 @@ impl MochyApp {
             }
             if old.lyrics.provider_order != self.settings.lyrics.provider_order || (!old.lyrics.show && self.settings.lyrics.show) {
                 self.lyrics_for = None;
+            }
+            if old.taste.excluded_playlists != self.settings.taste.excluded_playlists {
+                crate::widgets::menus::set_taste_excluded(ctx, &self.settings.taste.excluded_playlists);
+                crate::taste::refresh(&self.svc, self.settings.taste.excluded_playlists.clone());
             }
         }
         if let Some(t) = self.settings_dirty {
@@ -1243,6 +1260,11 @@ impl MochyApp {
                         ui.add_space(12.0);
                         ui.label(RichText::new(format!("Offline: {}", short(e, 80))).size(12.0).color(Color32::from_rgb(0xFF, 0x9A, 0x9A)));
                     }
+                    // Top-right corner: the YouTube account button.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        crate::account::corner_button(ui, &mut cx);
+                    });
                 });
                 ui.add_space(6.0);
                 let route = self.nav.current().clone();
@@ -1290,6 +1312,7 @@ impl MochyApp {
                         Route::LibraryArtist(id) => pages::library_views::local_artist(ui, &mut cx, &self.browse, id),
                         Route::LibraryAlbum(id) => pages::library_views::local_album(ui, &mut cx, &self.browse, id),
                         Route::Stats => pages::stats::show(ui, &mut cx, &mut self.browse),
+                        Route::Taste => pages::taste::show(ui, &mut cx, &self.browse),
                     }
                 });
             });
@@ -1420,6 +1443,8 @@ impl eframe::App for MochyApp {
             ctx.request_repaint_after(crate::pages::search::SUGGEST_DEBOUNCE);
         }
         self.settings_housekeeping(ctx);
+        // "Made for you" mixes: load the cache, regenerate when stale.
+        crate::taste::mixes::tick(&self.svc);
         if self.player.is_playing() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
@@ -1534,7 +1559,7 @@ impl MochyApp {
     fn run_shots(&mut self, ctx: &egui::Context) {
         let Some(sr) = self.shots.as_mut() else { return };
         // (name, route, seconds to wait before the shot — Home waits for network/art)
-        let steps: [(&str, Route, f32); 16] = [
+        let steps: [(&str, Route, f32); 17] = [
             ("home", Route::Home, 12.0),
             ("search", Route::Search, 3.0),
             ("library", Route::Library(LibTab::History), 3.0),
@@ -1552,6 +1577,7 @@ impl MochyApp {
             ("lib_recent", Route::Library(LibTab::RecentlyAdded), 3.0),
             ("stats", Route::Stats, 4.0),
             ("recap", Route::Stats, 3.0),
+            ("taste", Route::Taste, 4.0),
         ];
         ctx.request_repaint_after(Duration::from_millis(100));
         // `MOCHY_SHOTS_ONLY=now_playing,settings`: just those shots.

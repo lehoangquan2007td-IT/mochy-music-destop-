@@ -211,6 +211,9 @@ pub fn show(ui: &mut Ui, cx: &mut Ctx, st: &mut BrowseState) {
                     st.stats.recap = Some(RecapUi { page: 0, page_started: Instant::now() });
                 }
             });
+            if widgets::accent_button(ui, Icon::Taste, tr("Your taste"), cx.accent, false).on_hover_text(tr("What Mochy learned you like")).clicked() {
+                cx.act(Action::Navigate(crate::nav::Route::Taste));
+            }
         });
     });
     if period != StatsPeriod::All {

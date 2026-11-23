@@ -82,6 +82,7 @@ pub fn show(ui: &mut Ui, s: &mut AppSettings, sc: SettingsCtx) -> Vec<SettingsEv
         ui.checkbox(&mut s.playback.audio_normalization, tr("Normalize volume (YouTube loudness)"));
         ui.checkbox(&mut s.audio_lab.normalize_replay_gain, tr("Use ReplayGain tags for local files"));
         ui.checkbox(&mut s.playback.auto_skip_next_on_error, tr("Skip to the next song when a stream fails"));
+        ui.checkbox(&mut s.taste.rerank_radio, tr("Use your taste to order radio"));
         ui.checkbox(&mut s.misc.persistent_queue, tr("Restore the queue on startup"));
         ui.checkbox(&mut s.misc.run_in_background, tr("Run in background"));
         hint(ui, tr("Closing the window keeps the music playing; Mochy stays in the notification area (tray). Click its icon to reopen, right-click for controls and Quit."));

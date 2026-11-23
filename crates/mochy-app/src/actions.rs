@@ -33,6 +33,8 @@ pub enum Action {
     ChangePlaylistCover(String),
     /// Drop a local playlist's picked cover.
     RemovePlaylistCover(String),
+    /// Leave a local playlist out of the taste profile (or count it again).
+    ToggleTasteExclude(String),
     SetNowPlaying(bool),
     QueuePlay(usize),
     QueueRemove(usize),

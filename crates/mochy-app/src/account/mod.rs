@@ -31,7 +31,7 @@ use crate::services::{AppMsg, Services};
 use crate::ui::i18n::tr;
 use store::{AccountFile, Session, SyncCounts};
 
-pub use ui::settings_section;
+pub use ui::{corner_button, settings_section};
 
 /// Automatic sync on start runs at most this often.
 const AUTO_SYNC_EVERY_MS: i64 = 6 * 3600 * 1000;
